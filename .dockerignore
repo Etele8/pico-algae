@@ -1,0 +1,13 @@
+.git
+__pycache__/
+*.pyc
+
+data/
+runs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+.vscode/
+.idea/
