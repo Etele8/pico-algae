@@ -43,8 +43,8 @@ def build_frcnn_resnet50_fpn_coco(
     # Build a fresh model with custom anchors and desired trainable layers.
     # trainable_layers counts from the end: 2 => train layer4 and layer3, freeze earlier.
     backbone = resnet_fpn_backbone(
-        "resnet50",
-        weights=None,  # we will load COCO detector weights into the whole model
+        backbone_name="resnet50",
+        weights="DEFAULT",  # we will load COCO detector weights into the whole model
         trainable_layers=int(trainable_backbone_layers),
     )
 
