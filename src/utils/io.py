@@ -2,6 +2,7 @@ import os
 import random
 import numpy as np
 import torch
+from pathlib import Path
 
 
 def seed_everything(seed: int = 42) -> None:
@@ -13,3 +14,6 @@ def seed_everything(seed: int = 42) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
+    
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
