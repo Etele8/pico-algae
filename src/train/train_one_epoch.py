@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Dict
 
 import torch
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch: int, scaler=None, log_every: int = 20) -> Dict[str, float]:
@@ -17,7 +17,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch: int, scaler=No
         optimizer.zero_grad(set_to_none=True)
 
         use_amp = scaler is not None
-        with autocast(enabled=use_amp):
+        with autocast("cuda", enabled=use_amp):
             loss_dict = model(images, targets)
             loss = sum(loss_dict.values())
 
