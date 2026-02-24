@@ -15,10 +15,10 @@ from src.data.pico_dataset import PicoOgDetectionDataset
 from src.data.collate import detection_collate
 from src.data.transforms import IdentityTransform, RandomHorizontalFlip
 
-from src.models.frcnn import build_frcnn_resnet50_fpn
+from src.models.frcnn import build_frcnn_resnet50_fpn_coco
 from src.models.weights import save_checkpoint
 
-from src.train.optimizer import build_optimizer
+from src.train.optimizer import build_optimizer_two_groups
 from src.train.scheduler import build_scheduler
 from src.train.amp import get_scaler
 from src.train.train_one_epoch import train_one_epoch
@@ -36,6 +36,10 @@ def main():
 
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-4)
+    
+    ap.add_argument("--trainable_backbone_layers", type=int, default=2)
+    ap.add_argument("--lr_backbone", type=float, default=1e-5)
+    ap.add_argument("--lr_heads", type=float, default=1e-4)
 
     ap.add_argument("--val_frac", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
@@ -73,10 +77,10 @@ def main():
     dl_va = DataLoader(ds_va, batch_size=1, shuffle=False,
                        num_workers=args.num_workers, pin_memory=True, collate_fn=detection_collate)
 
-    model = build_frcnn_resnet50_fpn(num_classes=5, pretrained_backbone=True)
+    model = build_frcnn_resnet50_fpn_coco(num_classes=5, pretrained_backbone=True)
     model.to(device)
 
-    optimizer = build_optimizer(model, lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = build_optimizer_two_groups(model, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = build_scheduler(optimizer, step_size=max(1, args.epochs // 3), gamma=0.5)
 
     scaler = get_scaler(args.amp, device)
