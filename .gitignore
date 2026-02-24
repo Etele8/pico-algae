@@ -12,7 +12,13 @@ __pycache__/
 *.pyc
 
 # folders
-/data
+data/*
+!data/processed/
+data/processed/*
+!data/processed/dataset_2048x1500_webp/
+data/processed/dataset_2048x1500_webp/*
+!data/processed/dataset_2048x1500_webp/index.csv
+
 /runs
 /reports
 
