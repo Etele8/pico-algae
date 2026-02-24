@@ -22,7 +22,7 @@ space:
   anchor_sizes:
     - [[16], [32], [64], [128], [256]]
     - [[8],  [16], [32], [64],  [128]]
-    - [[16], [32], [64], [128], [256, 512]]   # optional if colonies are huge
+    - [[16], [32], [64], [128], [256]]
 
   # Aspect ratios per level
   aspect_ratios:
