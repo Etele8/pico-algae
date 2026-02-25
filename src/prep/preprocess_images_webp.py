@@ -156,6 +156,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="manifest.csv", help="Relative to data/processed/, e.g. manifest.csv")
     ap.add_argument("--out_dirname", default="dataset_2048x1500_webp", help="Folder name under data/processed/")
+    ap.add_argument("--overwrite", action="store_true", help="Rewrite existing WEBP/label outputs.")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -185,6 +186,24 @@ def main():
         red_path = Path(r["red_path"])
         label_path = Path(r["label_path"])
 
+        og_out = (out_og / stem).with_suffix(".webp")
+        red_out = (out_red / stem).with_suffix(".webp")
+        lbl_out = out_lbl / f"{stem}.txt"
+
+        if (not args.overwrite) and og_out.exists() and red_out.exists() and lbl_out.exists():
+            existing_boxes = parse_label_file(lbl_out)
+            rows.append({
+                "stem": stem,
+                "og_webp": str(og_out),
+                "red_webp": str(red_out),
+                "label_path": str(lbl_out),
+                "width": TARGET_W,
+                "height": TARGET_H,
+                "n_boxes": int(len(existing_boxes)),
+                "normalize": "img_float = img_uint8/255.0",
+            })
+            continue
+
         og = imread_bgr_unicode(og_path)
         red = imread_bgr_unicode(red_path)
 
@@ -200,8 +219,6 @@ def main():
 
         og_out = imwrite_webp_lossless_unicode(out_og / stem, og_rs)
         red_out = imwrite_webp_lossless_unicode(out_red / stem, red_rs)
-
-        lbl_out = out_lbl / f"{stem}.txt"
         write_label_file(lbl_out, boxes_rs)
 
         rows.append({
