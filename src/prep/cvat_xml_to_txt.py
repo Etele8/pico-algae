@@ -230,4 +230,4 @@ def main():
 if __name__ == "__main__":
     main()
     
-# python cvat_xml_to_txt.py --xml "D:\intezet\Pico_algae\data\raw\annotations\annotations1.xml" --out "D:\intezet\Pico_algae\data\processed\labels_abs" --label-map "EUK=0,FE=1,FC=2,colony=3" --combined --half-policy allow_both
+# python src\prep\cvat_xml_to_txt.py --xml "D:\intezet\Pico_algae\data\raw\annotations\annotations.xml" --out "D:\intezet\Pico_algae\data\processed\labels_abs" --label-map "EUK=0,FE=1,FC=2,colony=3" --combined --half-policy allow_both
