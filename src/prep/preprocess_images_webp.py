@@ -159,7 +159,7 @@ def main():
     ap.add_argument("--overwrite", action="store_true", help="Rewrite existing WEBP/label outputs.")
     args = ap.parse_args()
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent
     manifest_path = root / "data" / "processed" / args.manifest
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
