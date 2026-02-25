@@ -4,14 +4,10 @@ import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import argparse
-import itertools
 import json
-import math
 import random
-import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -36,17 +32,13 @@ from src.train.train_one_epoch import train_one_epoch
 from src.train.evaluate import evaluate_count_metrics
 
 
-# ---------- helpers ----------
-
-def to_tuple_of_tuples(x: Any) -> Tuple[Tuple[Any, ...], ...]:
-    # YAML gives lists; torchvision expects tuple-of-tuples
+def to_tuple_of_tuples(x: Any):
     return tuple(tuple(v) for v in x)
 
 def kfold_indices(n: int, k: int, seed: int) -> List[Tuple[np.ndarray, np.ndarray]]:
     rng = np.random.default_rng(seed)
     idx = np.arange(n)
     rng.shuffle(idx)
-
     folds = np.array_split(idx, k)
     out = []
     for i in range(k):
@@ -56,9 +48,6 @@ def kfold_indices(n: int, k: int, seed: int) -> List[Tuple[np.ndarray, np.ndarra
     return out
 
 def sample_trials(space: Dict[str, List[Any]], trials: int, seed: int) -> List[Dict[str, Any]]:
-    """
-    Randomly sample combinations from a discrete search space.
-    """
     rng = random.Random(seed)
     keys = list(space.keys())
     out = []
@@ -67,41 +56,6 @@ def sample_trials(space: Dict[str, List[Any]], trials: int, seed: int) -> List[D
         out.append(cfg)
     return out
 
-def score_thresh_sweep(
-    model,
-    dl_val,
-    device: torch.device,
-    thresh_grid: List[float],
-) -> Tuple[float, Dict[str, float]]:
-    """
-    Pick score_thresh minimizing count_mae on this fold.
-    Returns: (best_thresh, best_metrics)
-    """
-    best_t = None
-    best_mae = float("inf")
-    best_metrics = None
-
-    for t in thresh_grid:
-        m = evaluate_count_metrics(model, dl_val, device, score_thresh=float(t))
-        if m["count_mae"] < best_mae:
-            best_mae = m["count_mae"]
-            best_t = float(t)
-            best_metrics = m
-
-    return best_t, best_metrics if best_metrics is not None else {"count_mae": float("inf")}
-
-
-@dataclass
-class TrialResult:
-    trial_id: int
-    params: Dict[str, Any]
-    fold_mae: List[float]
-    fold_best_thresh: List[float]
-    mean_mae: float
-    std_mae: float
-
-
-# ---------- main ----------
 
 def main():
     ap = argparse.ArgumentParser()
@@ -121,18 +75,22 @@ def main():
     epochs = int(tune_cfg.get("epochs", 10))
     amp = bool(tune_cfg.get("amp", True))
     num_workers = int(tune_cfg.get("num_workers", 8))
-    thresh_grid = [float(x) for x in tune_cfg.get("val_score_thresh_grid", [0.5])]
+
+    # This is a fixed validation score threshold during TRAIN tuning
+    val_score_thresh = float(tune_cfg.get("val_score_thresh", 0.5))
+
+    # Which classes count toward MAE objective
+    classes_to_count = tune_cfg.get("classes_to_count", [1, 2, 3])
 
     space = tune_cfg["space"]
 
     out_dir = Path(args.out_dir)
     ensure_dir(out_dir)
-    results_jsonl = out_dir / "tuning_results.jsonl"
-    results_csv = out_dir / "tuning_results.csv"
-    best_model_path = out_dir / "best_model.pt"
-    best_summary_path = out_dir / "best_model_summary.json"
+    results_jsonl = out_dir / "tuning_train_results.jsonl"
+    results_csv = out_dir / "tuning_train_results.csv"
+    best_model_path = out_dir / "best_train_model.pt"
+    best_summary_path = out_dir / "best_train_model_summary.json"
 
-    # device
     if args.device:
         device = torch.device(args.device)
     else:
@@ -143,34 +101,23 @@ def main():
     n = len(df)
     folds = kfold_indices(n, k=k, seed=seed)
 
-    # generate sampled trials
     trial_params_list = sample_trials(space, trials=trials, seed=seed)
-
     all_rows = []
 
-    best_overall = None  # (mean_mae, trial_id, params)
+    best_overall = None  # (mean_mae, trial_id, params, best_fold_idx, best_fold_state)
 
     for trial_id, params in enumerate(trial_params_list, start=1):
         print("\n" + "=" * 80)
-        print(f"TRIAL {trial_id}/{trials}")
+        print(f"TRAIN TRIAL {trial_id}/{trials}")
         print(json.dumps(params, indent=2))
 
-        # normalize anchors/aspect ratios if present
         anchor_sizes = params.get("anchor_sizes", None)
         aspect_ratios = params.get("aspect_ratios", None)
 
-        if anchor_sizes is not None:
-            anchor_sizes_tt = to_tuple_of_tuples(anchor_sizes)
-        else:
-            anchor_sizes_tt = None
-
-        if aspect_ratios is not None:
-            aspect_ratios_tt = to_tuple_of_tuples(aspect_ratios)
-        else:
-            aspect_ratios_tt = None
+        anchor_sizes_tt = to_tuple_of_tuples(anchor_sizes) if anchor_sizes is not None else None
+        aspect_ratios_tt = to_tuple_of_tuples(aspect_ratios) if aspect_ratios is not None else None
 
         fold_mae = []
-        fold_best_thresh = []
         fold_models_cpu: List[Dict[str, torch.Tensor]] = []
 
         for fold_i, (tr_idx, va_idx) in enumerate(folds, start=1):
@@ -206,6 +153,8 @@ def main():
                 trainable_backbone_layers=int(params.get("trainable_backbone_layers", 2)),
                 anchor_sizes=anchor_sizes_tt,
                 aspect_ratios=aspect_ratios_tt,
+                detections_per_image=int(params.get("detections_per_image", 400)),
+                box_nms_thresh=float(params.get("box_nms_thresh", 0.5)),
             )
             model.to(device)
 
@@ -218,49 +167,50 @@ def main():
             scheduler = build_scheduler(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
             scaler = get_scaler(use_amp=amp, device=device)
 
-            # train for budgeted epochs
             for ep in range(1, epochs + 1):
                 tr_metrics = train_one_epoch(model, optimizer, dl_tr, device, epoch=ep, scaler=scaler, log_every=0)
                 scheduler.step()
                 if ep == 1 or ep == epochs or ep % 5 == 0:
                     print(f"  ep {ep}/{epochs} loss={tr_metrics['loss']:.4f}")
 
-            # pick best score threshold on this fold for count MAE
-            best_t, best_m = score_thresh_sweep(model, dl_va, device, thresh_grid)
-            fold_mae.append(float(best_m["count_mae"]))
-            fold_best_thresh.append(float(best_t))
+            m = evaluate_count_metrics(
+                model,
+                dl_va,
+                device,
+                score_thresh=val_score_thresh,
+                classes_to_count=classes_to_count,
+            )
+            fold_mae.append(float(m["count_mae"]))
+            print(f"  val(score={val_score_thresh:.2f}) count_mae={m['count_mae']:.4f} bias={m['count_bias']:.4f}")
 
-            print(f"  fold best thresh={best_t:.2f}  count_mae={best_m['count_mae']:.4f}")
-
-            # Keep fold model in CPU memory for this trial only.
-            # We persist to disk only if this trial becomes the new best overall.
             model_state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
             fold_models_cpu.append(model_state_cpu)
 
-            # free memory
             del model
             torch.cuda.empty_cache()
 
         mean_mae = float(np.mean(fold_mae))
         std_mae = float(np.std(fold_mae))
+
         row = {
             "trial_id": trial_id,
             "mean_count_mae": mean_mae,
             "std_count_mae": std_mae,
             "fold_mae": fold_mae,
-            "fold_best_thresh": fold_best_thresh,
+            "val_score_thresh": val_score_thresh,
+            "classes_to_count": classes_to_count,
             **params,
         }
-
         append_jsonl(results_jsonl, row)
         all_rows.append(row)
 
-        print(f"\nTRIAL {trial_id} summary: mean_mae={mean_mae:.4f} ± {std_mae:.4f}")
+        print(f"\nTRAIN TRIAL {trial_id} summary: mean_mae={mean_mae:.4f} ± {std_mae:.4f}")
 
         if best_overall is None or mean_mae < best_overall[0]:
-            best_overall = (mean_mae, trial_id, params)
-            best_fold_idx = int(np.argmin(fold_mae))  # 0-based
+            best_fold_idx = int(np.argmin(fold_mae))
             best_fold_id = best_fold_idx + 1
+            best_overall = (mean_mae, trial_id, params, best_fold_idx)
+
             best_ckpt = {
                 "model": fold_models_cpu[best_fold_idx],
                 "trial_id": trial_id,
@@ -268,7 +218,8 @@ def main():
                 "fold_count_mae": float(fold_mae[best_fold_idx]),
                 "mean_count_mae": mean_mae,
                 "std_count_mae": std_mae,
-                "best_score_thresh_for_fold": float(fold_best_thresh[best_fold_idx]),
+                "val_score_thresh": val_score_thresh,
+                "classes_to_count": classes_to_count,
                 "params": params,
             }
             torch.save(best_ckpt, best_model_path)
@@ -280,7 +231,8 @@ def main():
                         "fold_count_mae": float(fold_mae[best_fold_idx]),
                         "mean_count_mae": mean_mae,
                         "std_count_mae": std_mae,
-                        "best_score_thresh_for_fold": float(fold_best_thresh[best_fold_idx]),
+                        "val_score_thresh": val_score_thresh,
+                        "classes_to_count": classes_to_count,
                         "params": params,
                         "checkpoint_path": str(best_model_path),
                     },
@@ -291,7 +243,6 @@ def main():
             )
             print("  NEW BEST ✅")
 
-    # write CSV summary
     df_out = pd.DataFrame(all_rows)
     df_out.to_csv(results_csv, index=False)
     print("\nWrote:", results_jsonl)
@@ -299,11 +250,6 @@ def main():
     if best_model_path.exists():
         print("Wrote:", best_model_path)
         print("Wrote:", best_summary_path)
-    if best_overall:
-        print("\nBEST OVERALL:")
-        print("  mean_mae:", best_overall[0])
-        print("  trial_id:", best_overall[1])
-        print("  params:", json.dumps(best_overall[2], indent=2))
 
 
 if __name__ == "__main__":
