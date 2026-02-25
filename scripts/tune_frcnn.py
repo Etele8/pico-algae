@@ -127,9 +127,10 @@ def main():
 
     out_dir = Path(args.out_dir)
     ensure_dir(out_dir)
-    ensure_dir(out_dir / "checkpoints_per_fold")  # optional
     results_jsonl = out_dir / "tuning_results.jsonl"
     results_csv = out_dir / "tuning_results.csv"
+    best_model_path = out_dir / "best_model.pt"
+    best_summary_path = out_dir / "best_model_summary.json"
 
     # device
     if args.device:
@@ -170,6 +171,7 @@ def main():
 
         fold_mae = []
         fold_best_thresh = []
+        fold_models_cpu: List[Dict[str, torch.Tensor]] = []
 
         for fold_i, (tr_idx, va_idx) in enumerate(folds, start=1):
             print(f"\n--- Fold {fold_i}/{k} ---")
@@ -230,9 +232,10 @@ def main():
 
             print(f"  fold best thresh={best_t:.2f}  count_mae={best_m['count_mae']:.4f}")
 
-            # optional: save fold checkpoint
-            ckpt_path = out_dir / "checkpoints_per_fold" / f"trial{trial_id:03d}_fold{fold_i:02d}.pt"
-            torch.save({"model": model.state_dict(), "params": params, "fold": fold_i}, ckpt_path)
+            # Keep fold model in CPU memory for this trial only.
+            # We persist to disk only if this trial becomes the new best overall.
+            model_state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            fold_models_cpu.append(model_state_cpu)
 
             # free memory
             del model
@@ -256,6 +259,36 @@ def main():
 
         if best_overall is None or mean_mae < best_overall[0]:
             best_overall = (mean_mae, trial_id, params)
+            best_fold_idx = int(np.argmin(fold_mae))  # 0-based
+            best_fold_id = best_fold_idx + 1
+            best_ckpt = {
+                "model": fold_models_cpu[best_fold_idx],
+                "trial_id": trial_id,
+                "fold": best_fold_id,
+                "fold_count_mae": float(fold_mae[best_fold_idx]),
+                "mean_count_mae": mean_mae,
+                "std_count_mae": std_mae,
+                "best_score_thresh_for_fold": float(fold_best_thresh[best_fold_idx]),
+                "params": params,
+            }
+            torch.save(best_ckpt, best_model_path)
+            best_summary_path.write_text(
+                json.dumps(
+                    {
+                        "trial_id": trial_id,
+                        "best_fold": best_fold_id,
+                        "fold_count_mae": float(fold_mae[best_fold_idx]),
+                        "mean_count_mae": mean_mae,
+                        "std_count_mae": std_mae,
+                        "best_score_thresh_for_fold": float(fold_best_thresh[best_fold_idx]),
+                        "params": params,
+                        "checkpoint_path": str(best_model_path),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             print("  NEW BEST ✅")
 
     # write CSV summary
@@ -263,6 +296,9 @@ def main():
     df_out.to_csv(results_csv, index=False)
     print("\nWrote:", results_jsonl)
     print("Wrote:", results_csv)
+    if best_model_path.exists():
+        print("Wrote:", best_model_path)
+        print("Wrote:", best_summary_path)
     if best_overall:
         print("\nBEST OVERALL:")
         print("  mean_mae:", best_overall[0])
