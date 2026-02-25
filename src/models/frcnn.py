@@ -20,6 +20,7 @@ def build_frcnn_resnet50_fpn_coco(
     trainable_backbone_layers: int = 2,
     anchor_sizes: Optional[Sequence[Sequence[int]]] = None,
     aspect_ratios: Optional[Sequence[Sequence[float]]] = None,
+    detections_per_image: Optional[int] = 300,
 ) -> FasterRCNN:
     """
     Builds Faster R-CNN ResNet50-FPN with:
@@ -52,6 +53,11 @@ def build_frcnn_resnet50_fpn_coco(
         backbone=backbone,
         num_classes=91,  # temporary; we'll replace predictor after loading weights
         rpn_anchor_generator=anchor_generator,
+        rpn_pre_nms_top_n_train=4000,
+        rpn_post_nms_top_n_train=2000,
+        rpn_pre_nms_top_n_test=2000,
+        rpn_post_nms_top_n_test=2000,
+        box_detections_per_img=detections_per_image,
     )
 
     # Load COCO pretrained detector weights
