@@ -174,7 +174,7 @@ def main():
     ap.add_argument("--out-name", default="manifest.csv", help="Filename under data/processed/")
     args = ap.parse_args()
 
-    paths = Paths.from_root(Path(__file__).resolve().parent.parent)
+    paths = Paths.from_root(Path(__file__).resolve().parent.parent.parent)
     
 
     for p in [paths.og_dir, paths.red_dir, paths.labels_dir]:

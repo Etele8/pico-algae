@@ -166,7 +166,7 @@ def main():
     ap.add_argument("--manifest", default="manifest.csv", help="Manifest filename under data/processed/")
     args = ap.parse_args()
 
-    paths = Paths.from_root(Path(__file__).resolve().parent.parent)
+    paths = Paths.from_root(Path(__file__).resolve().parent.parent.parent)
     manifest_path = paths.processed_dir / args.manifest
 
     if not manifest_path.exists():
