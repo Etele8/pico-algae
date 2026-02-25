@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -33,6 +34,21 @@ TARGET_H = 1500
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
+
+
+def as_cloud_path(p: Path, local_root: Path, cloud_root: str = "/workspace/pico-algae") -> str:
+    """
+    Convert a local absolute path into a cloud path rooted at /workspace/pico-algae.
+    Falls back to POSIX formatting if path is not under local_root.
+    """
+    p_abs = os.path.abspath(str(p))
+    root_abs = os.path.abspath(str(local_root))
+    if os.path.normcase(p_abs).startswith(os.path.normcase(root_abs + os.sep)):
+        rel = os.path.relpath(p_abs, root_abs).replace("\\", "/")
+        return f"{cloud_root}/{rel}"
+    if os.path.normcase(p_abs) == os.path.normcase(root_abs):
+        return cloud_root
+    return p_abs.replace("\\", "/")
 
 
 def imread_bgr_unicode(path: Path) -> np.ndarray:
@@ -194,9 +210,9 @@ def main():
             existing_boxes = parse_label_file(lbl_out)
             rows.append({
                 "stem": stem,
-                "og_webp": str(og_out),
-                "red_webp": str(red_out),
-                "label_path": str(lbl_out),
+                "og_webp": as_cloud_path(og_out, root),
+                "red_webp": as_cloud_path(red_out, root),
+                "label_path": as_cloud_path(lbl_out, root),
                 "width": TARGET_W,
                 "height": TARGET_H,
                 "n_boxes": int(len(existing_boxes)),
@@ -223,9 +239,9 @@ def main():
 
         rows.append({
             "stem": stem,
-            "og_webp": str(og_out),
-            "red_webp": str(red_out),
-            "label_path": str(lbl_out),
+            "og_webp": as_cloud_path(og_out, root),
+            "red_webp": as_cloud_path(red_out, root),
+            "label_path": as_cloud_path(lbl_out, root),
             "width": TARGET_W,
             "height": TARGET_H,
             "n_boxes": int(len(boxes_rs)),
@@ -237,6 +253,10 @@ def main():
             print(f"[{i+1}/{len(df)}] processed...")
 
     out_index = base_out / "index.csv"
+    if len(rows) != len(df):
+        raise RuntimeError(
+            f"Row count mismatch: manifest has {len(df)} rows, but index would have {len(rows)} rows."
+        )
     pd.DataFrame(rows).to_csv(out_index, index=False, encoding="utf-8")
 
     print("Wrote dataset to:", base_out)
