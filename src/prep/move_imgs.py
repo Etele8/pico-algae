@@ -136,4 +136,4 @@ def main():
 if __name__ == "__main__":
     main()
     
-# python move_imgs.py --xml "D:\intezet\Pico_algae\data\raw\annotations" --src-images "D:\intezet\Alga_szam\data\collected_images" --dst-og "D:\intezet\Pico_algae\data\raw\images_og" --dst-red "D:\intezet\Pico_algae\data\raw\images_red"
+# python src\prep\move_imgs.py --xml "D:\intezet\Pico_algae\data\raw\annotations" --src-images "D:\intezet\Alga_szam\data\collected_images" --dst-og "D:\intezet\Pico_algae\data\raw\images_og" --dst-red "D:\intezet\Pico_algae\data\raw\images_red"
