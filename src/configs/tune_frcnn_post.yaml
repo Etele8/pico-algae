@@ -6,9 +6,9 @@ num_workers: 8
 classes_to_count: [1, 2, 3]
 
 # Post-processing sweeps
-score_thresh_grid: [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
+score_thresh_grid: [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]
 box_nms_thresh_grid: [0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65]
-detections_per_image_grid: [300, 400, 600, 800]
+detections_per_image_grid: [300, 400, 600, 700, 800]
 
 per_class_score_thresh_grid:
   # Balanced low
