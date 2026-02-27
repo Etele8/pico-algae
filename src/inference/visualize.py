@@ -11,10 +11,17 @@ from src.utils.io import ensure_dir
 
 def draw_xyxy(img_rgb_u8: np.ndarray, boxes: np.ndarray, labels: np.ndarray, scores: Optional[np.ndarray] = None):
     out = img_rgb_u8.copy()
+    class_colors = {
+        1: (0, 0, 255),    # blue
+        2: (255, 255, 0),  # yellow
+        3: (255, 0, 0),    # red
+        4: (0, 255, 0),    # green
+    }
     for i, (x1, y1, x2, y2) in enumerate(boxes):
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-        cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
         lab = int(labels[i])
+        color = class_colors.get(lab, (255, 255, 255))
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
         name = PicoClasses.tv_to_name(lab)
         if scores is not None:
             name = f"{name} {float(scores[i]):.2f}"
