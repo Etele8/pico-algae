@@ -24,6 +24,7 @@ def predict_on_loader(
         for out, tgt in zip(outputs, targets):
             scores = out["scores"].detach().cpu()
             labels = out["labels"].detach().cpu()
+            raw_count = int(scores.shape[0])
 
             if per_class_score_thresh is None:
                 keep_score = scores >= float(score_thresh)
@@ -43,6 +44,7 @@ def predict_on_loader(
 
             results.append({
                 "image_id": int(tgt["image_id"][0]),
+                "raw_count": raw_count,
                 "pred_boxes": out["boxes"].detach().cpu()[keep].numpy(),
                 "pred_labels": labels[keep].numpy(),
                 "pred_scores": scores[keep].numpy(),

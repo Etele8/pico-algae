@@ -89,6 +89,12 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for i, res in enumerate(results):
+        raw_count = int(res.get("raw_count", 0))
+        kept_count = int(len(res["pred_boxes"]))
+        hit_cap = raw_count >= detections_per_image
+        cap_note = " [HIT_CAP]" if hit_cap else ""
+        print(f"{pairs[i].stem}: raw={raw_count}, kept={kept_count}, cap={detections_per_image}{cap_note}")
+
         img_rgb = ds.image_for_vis(i)
         vis = draw_xyxy(img_rgb, res["pred_boxes"], res["pred_labels"], res["pred_scores"])
         save_vis(out_dir / f"{pairs[i].stem}_pred.png", vis)
