@@ -9,7 +9,13 @@ from src.data.pico_dataset import PicoClasses
 from src.utils.io import ensure_dir
 
 
-def draw_xyxy(img_rgb_u8: np.ndarray, boxes: np.ndarray, labels: np.ndarray, scores: Optional[np.ndarray] = None):
+def draw_xyxy(
+    img_rgb_u8: np.ndarray,
+    boxes: np.ndarray,
+    labels: np.ndarray,
+    scores: Optional[np.ndarray] = None,
+    deleted_boxes: Optional[np.ndarray] = None,
+):
     out = img_rgb_u8.copy()
     class_colors = {
         1: (0, 0, 255),    # blue
@@ -17,6 +23,11 @@ def draw_xyxy(img_rgb_u8: np.ndarray, boxes: np.ndarray, labels: np.ndarray, sco
         3: (255, 0, 0),    # red
         4: (0, 255, 0),    # green
     }
+    if deleted_boxes is not None:
+        for x1, y1, x2, y2 in deleted_boxes:
+            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+            cv2.rectangle(out, (x1, y1), (x2, y2), (160, 160, 160), 1)
+
     for i, (x1, y1, x2, y2) in enumerate(boxes):
         x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
         lab = int(labels[i])

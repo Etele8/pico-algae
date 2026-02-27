@@ -95,8 +95,20 @@ def main():
         cap_note = " [HIT_CAP]" if hit_cap else ""
         print(f"{pairs[i].stem}: raw={raw_count}, kept={kept_count}, cap={detections_per_image}{cap_note}")
 
+        keep_mask = res.get("keep_mask", None)
+        raw_boxes = res.get("raw_boxes", None)
+        deleted_boxes = None
+        if keep_mask is not None and raw_boxes is not None:
+            deleted_boxes = raw_boxes[~keep_mask]
+
         img_rgb = ds.image_for_vis(i)
-        vis = draw_xyxy(img_rgb, res["pred_boxes"], res["pred_labels"], res["pred_scores"])
+        vis = draw_xyxy(
+            img_rgb,
+            res["pred_boxes"],
+            res["pred_labels"],
+            res["pred_scores"],
+            deleted_boxes=deleted_boxes,
+        )
         save_vis(out_dir / f"{pairs[i].stem}_pred.png", vis)
 
     print("Wrote predictions to:", out_dir)
