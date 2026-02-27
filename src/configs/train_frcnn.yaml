@@ -1,6 +1,6 @@
 seed: 42
-val_frac: 0.2
-epochs: 50
+val_frac: 0.0
+epochs: 60
 batch_size: 2
 num_workers: 8
 amp: true
