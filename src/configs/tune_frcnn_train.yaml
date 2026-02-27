@@ -1,9 +1,9 @@
 seed: 42
 k_folds: 5
-trials: 15
-epochs: 12
+trials: 12
+epochs: 10
 amp: true
-num_workers: 8
+num_workers: 16
 
 classes_to_count: [1, 2, 3]
 
@@ -25,10 +25,10 @@ space:
        [0.75, 1.0, 1.33],
        [0.75, 1.0, 1.33],
        [0.75, 1.0, 1.33]]
-  trainable_backbone_layers: [1, 2, 3]
+  trainable_backbone_layers: [2, 3]
   batch_size: [1, 2]
   lr_backbone: [1e-5, 2e-5]
-  lr_heads: [5e-5, 1e-4, 2e-4]
+  lr_heads: [1e-4, 2e-4]
   weight_decay: [1e-4]
   detections_per_image: [300]
   box_nms_thresh: [0.4, 0.5, 0.6]
