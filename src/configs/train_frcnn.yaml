@@ -1,14 +1,25 @@
 seed: 42
-epochs: 20
+val_frac: 0.2
+epochs: 30
 batch_size: 2
-num_workers: 4
+num_workers: 8
+amp: true
+
+classes_to_count: [1, 2, 3]
+
+space:
+  anchor_sizes: [[12], [24], [48], [96], [192]]
+  aspect_ratios: [[0.5, 1.0, 2.0],
+                  [0.5, 1.0, 2.0],
+                  [0.5, 1.0, 2.0],
+                  [0.5, 1.0, 2.0],
+                  [0.5, 1.0, 2.0]]
 
 weight_decay: 1e-4
-trainable_backbone_layers: 2
-lr_backbone: 1e-5
-lr_heads: 1e-4
-
-val_frac: 0.2
-amp: false
+trainable_backbone_layers: 3
+lr_backbone: 2e-5
+lr_heads: 2e-4
+detections_per_image: 300
+box_nms_thresh: 0.5
 score_thresh: 0.5
 flip_p: 0.0

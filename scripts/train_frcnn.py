@@ -26,6 +26,18 @@ from src.train.train_one_epoch import train_one_epoch
 from src.train.evaluate import evaluate_count_metrics
 
 
+def to_tuple_of_tuples(x):
+    return tuple(tuple(v) for v in x)
+
+
+def as_bool(x) -> bool:
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, str):
+        return x.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(x)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--index_csv", required=True, type=str)
@@ -44,9 +56,21 @@ def main():
     lr_backbone = float(cfg.get("lr_backbone", cfg.get("lr", 1e-5)))
     lr_heads = float(cfg.get("lr_heads", cfg.get("lr", 1e-4)))
     val_frac = float(cfg.get("val_frac", 0.2))
-    use_amp = bool(cfg.get("amp", False))
+    use_amp = as_bool(cfg.get("amp", False))
     score_thresh = float(cfg.get("score_thresh", 0.5))
     flip_p = float(cfg.get("flip_p", 0.0))
+    classes_to_count = cfg.get("classes_to_count", None)
+    per_class_score_thresh_raw = cfg.get("per_class_score_thresh", None)
+    per_class_score_thresh = None
+    if isinstance(per_class_score_thresh_raw, dict):
+        per_class_score_thresh = {int(k): float(v) for k, v in per_class_score_thresh_raw.items()}
+
+    anchor_sizes_cfg = cfg.get("anchor_sizes", cfg.get("space", {}).get("anchor_sizes"))
+    aspect_ratios_cfg = cfg.get("aspect_ratios", cfg.get("space", {}).get("aspect_ratios"))
+    anchor_sizes = to_tuple_of_tuples(anchor_sizes_cfg) if anchor_sizes_cfg is not None else None
+    aspect_ratios = to_tuple_of_tuples(aspect_ratios_cfg) if aspect_ratios_cfg is not None else None
+    detections_per_image = int(cfg.get("detections_per_image", 300))
+    box_nms_thresh = float(cfg.get("box_nms_thresh", 0.5))
 
     seed_everything(seed)
 
@@ -79,6 +103,10 @@ def main():
     model = build_frcnn_resnet50_fpn_coco(
         num_classes=5,
         trainable_backbone_layers=trainable_backbone_layers,
+        anchor_sizes=anchor_sizes,
+        aspect_ratios=aspect_ratios,
+        detections_per_image=detections_per_image,
+        box_nms_thresh=box_nms_thresh,
     )
     model.to(device)
 
@@ -98,7 +126,14 @@ def main():
         t0 = time.time()
 
         tr = train_one_epoch(model, optimizer, dl_tr, device, epoch, scaler=scaler, log_every=20)
-        va = evaluate_count_metrics(model, dl_va, device, score_thresh=score_thresh)
+        va = evaluate_count_metrics(
+            model,
+            dl_va,
+            device,
+            score_thresh=score_thresh,
+            classes_to_count=classes_to_count,
+            per_class_score_thresh=per_class_score_thresh,
+        )
         scheduler.step()
 
         row = {"epoch": epoch, **tr, **va, "lr": float(optimizer.param_groups[0]["lr"]), "time_s": time.time() - t0}
