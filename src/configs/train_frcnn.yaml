@@ -1,0 +1,14 @@
+seed: 42
+epochs: 20
+batch_size: 2
+num_workers: 4
+
+weight_decay: 1e-4
+trainable_backbone_layers: 2
+lr_backbone: 1e-5
+lr_heads: 1e-4
+
+val_frac: 0.2
+amp: false
+score_thresh: 0.5
+flip_p: 0.0

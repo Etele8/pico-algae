@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 from src.utils.seed import seed_everything
@@ -29,27 +30,25 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--index_csv", required=True, type=str)
     ap.add_argument("--out_dir", required=True, type=str)
-
-    ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--batch_size", type=int, default=2)
-    ap.add_argument("--num_workers", type=int, default=4)
-
-    ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--weight_decay", type=float, default=1e-4)
-    
-    ap.add_argument("--trainable_backbone_layers", type=int, default=2)
-    ap.add_argument("--lr_backbone", type=float, default=1e-5)
-    ap.add_argument("--lr_heads", type=float, default=1e-4)
-
-    ap.add_argument("--val_frac", type=float, default=0.2)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--amp", action="store_true")
-    ap.add_argument("--score_thresh", type=float, default=0.5)
-
-    ap.add_argument("--flip_p", type=float, default=0.0, help="Start with 0.0; set e.g. 0.5 after baseline works.")
+    ap.add_argument("--train_yaml", required=True, type=str)
     args = ap.parse_args()
 
-    seed_everything(args.seed)
+    cfg = yaml.safe_load(Path(args.train_yaml).read_text(encoding="utf-8")) or {}
+
+    seed = int(cfg.get("seed", 42))
+    epochs = int(cfg.get("epochs", 20))
+    batch_size = int(cfg.get("batch_size", 2))
+    num_workers = int(cfg.get("num_workers", 4))
+    weight_decay = float(cfg.get("weight_decay", 1e-4))
+    trainable_backbone_layers = int(cfg.get("trainable_backbone_layers", 2))
+    lr_backbone = float(cfg.get("lr_backbone", cfg.get("lr", 1e-5)))
+    lr_heads = float(cfg.get("lr_heads", cfg.get("lr", 1e-4)))
+    val_frac = float(cfg.get("val_frac", 0.2))
+    use_amp = bool(cfg.get("amp", False))
+    score_thresh = float(cfg.get("score_thresh", 0.5))
+    flip_p = float(cfg.get("flip_p", 0.0))
+
+    seed_everything(seed)
 
     out_dir = Path(args.out_dir)
     ckpt_dir = out_dir / "checkpoints"
@@ -61,37 +60,45 @@ def main():
     print("Device:", device)
 
     df = load_index(Path(args.index_csv))
-    split = random_split_df(df, val_frac=args.val_frac, seed=args.seed)
+    split = random_split_df(df, val_frac=val_frac, seed=seed)
 
     # transforms (keep geometry simple at first)
-    if args.flip_p > 0:
-        tfm = RandomHorizontalFlip(p=args.flip_p)
+    if flip_p > 0:
+        tfm = RandomHorizontalFlip(p=flip_p)
     else:
         tfm = IdentityTransform()
 
     ds_tr = PicoOgDetectionDataset(split.train, transform=tfm, keep_empty=True)
     ds_va = PicoOgDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
 
-    dl_tr = DataLoader(ds_tr, batch_size=args.batch_size, shuffle=True,
-                       num_workers=args.num_workers, pin_memory=True, collate_fn=detection_collate)
+    dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True,
+                       num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
     dl_va = DataLoader(ds_va, batch_size=1, shuffle=False,
-                       num_workers=args.num_workers, pin_memory=True, collate_fn=detection_collate)
+                       num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
 
-    model = build_frcnn_resnet50_fpn_coco(num_classes=5, pretrained_backbone=True)
+    model = build_frcnn_resnet50_fpn_coco(
+        num_classes=5,
+        trainable_backbone_layers=trainable_backbone_layers,
+    )
     model.to(device)
 
-    optimizer = build_optimizer_two_groups(model, lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = build_scheduler(optimizer, step_size=max(1, args.epochs // 3), gamma=0.5)
+    optimizer = build_optimizer_two_groups(
+        model,
+        lr_backbone=lr_backbone,
+        lr_heads=lr_heads,
+        weight_decay=weight_decay,
+    )
+    scheduler = build_scheduler(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
 
-    scaler = get_scaler(args.amp, device)
+    scaler = get_scaler(use_amp, device)
 
     best = float("inf")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         t0 = time.time()
 
         tr = train_one_epoch(model, optimizer, dl_tr, device, epoch, scaler=scaler, log_every=20)
-        va = evaluate_count_metrics(model, dl_va, device, score_thresh=args.score_thresh)
+        va = evaluate_count_metrics(model, dl_va, device, score_thresh=score_thresh)
         scheduler.step()
 
         row = {"epoch": epoch, **tr, **va, "lr": float(optimizer.param_groups[0]["lr"]), "time_s": time.time() - t0}
