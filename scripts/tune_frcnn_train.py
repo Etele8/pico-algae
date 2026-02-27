@@ -19,12 +19,12 @@ from src.utils.seed import seed_everything
 from src.utils.io import ensure_dir
 from src.utils.logging import append_jsonl
 
-from src.data.dataset_index import load_index
-from src.data.pico_dataset import PicoOgDetectionDataset
+from src.data.dataset_index_6ch import load_index_6ch
+from src.data.pico_dataset_6ch import PicoOgRedDetectionDataset
 from src.data.collate import detection_collate
 from src.data.transforms import IdentityTransform
 
-from src.models.frcnn import build_frcnn_resnet50_fpn_coco
+from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
 from src.train.optimizer import build_optimizer_two_groups
 from src.train.scheduler import build_scheduler
 from src.train.amp import get_scaler
@@ -62,7 +62,7 @@ def main():
     ap.add_argument("--index_csv", required=True, type=str)
     ap.add_argument("--tune_yaml", required=True, type=str)
     ap.add_argument("--out_dir", required=True, type=str)
-    ap.add_argument("--device", default="", type=str, help="'' auto, or 'cuda', or 'cpu'")
+    ap.add_argument("--device", default="cuda", type=str, help="'' auto, or 'cuda', or 'cpu'")
     args = ap.parse_args()
 
     tune_cfg = yaml.safe_load(Path(args.tune_yaml).read_text(encoding="utf-8"))
@@ -97,7 +97,7 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    df = load_index(Path(args.index_csv))
+    df = load_index_6ch(Path(args.index_csv))
     n = len(df)
     folds = kfold_indices(n, k=k, seed=seed)
 
@@ -126,8 +126,8 @@ def main():
             df_tr = df.iloc[tr_idx].reset_index(drop=True)
             df_va = df.iloc[va_idx].reset_index(drop=True)
 
-            ds_tr = PicoOgDetectionDataset(df_tr, transform=IdentityTransform(), keep_empty=True)
-            ds_va = PicoOgDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
+            ds_tr = PicoOgRedDetectionDataset(df_tr, transform=IdentityTransform(), keep_empty=True)
+            ds_va = PicoOgRedDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
 
             batch_size = int(params.get("batch_size", 2))
 
@@ -148,7 +148,7 @@ def main():
                 collate_fn=detection_collate,
             )
 
-            model = build_frcnn_resnet50_fpn_coco(
+            model = build_frcnn_resnet50_fpn_coco_6ch(
                 num_classes=5,
                 trainable_backbone_layers=int(params.get("trainable_backbone_layers", 2)),
                 anchor_sizes=anchor_sizes_tt,
