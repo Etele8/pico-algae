@@ -78,6 +78,9 @@ def build_frcnn_resnet50_fpn_coco_6ch(
         rpn_post_nms_top_n_test=2000,
         box_detections_per_img=detections_per_image,
         box_nms_thresh=float(box_nms_thresh),
+        
+        image_mean=[0.485, 0.456, 0.406, 0.485, 0.456, 0.406],
+        image_std=[0.229, 0.224, 0.225, 0.229, 0.224, 0.225],
     )
 
     # ---- Load COCO weights, but adapt conv1 weight to 6ch ----
