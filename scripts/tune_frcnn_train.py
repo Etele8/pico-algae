@@ -31,9 +31,18 @@ from src.train.amp import get_scaler
 from src.train.train_one_epoch import train_one_epoch
 from src.train.evaluate import evaluate_count_metrics
 
+# python scripts/tune_frcnn_train.py --index_csv data/processed/dataset_2048x1500_webp/index.csv --tune_yaml src/configs/tune_frcnn_train.yaml --out_dir runs/tuning
 
 def to_tuple_of_tuples(x: Any):
     return tuple(tuple(v) for v in x)
+
+
+def as_bool(x: Any) -> bool:
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, str):
+        return x.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(x)
 
 def kfold_indices(n: int, k: int, seed: int) -> List[Tuple[np.ndarray, np.ndarray]]:
     rng = np.random.default_rng(seed)
@@ -62,7 +71,7 @@ def main():
     ap.add_argument("--index_csv", required=True, type=str)
     ap.add_argument("--tune_yaml", required=True, type=str)
     ap.add_argument("--out_dir", required=True, type=str)
-    ap.add_argument("--device", default="cuda", type=str, help="'' auto, or 'cuda', or 'cpu'")
+    ap.add_argument("--device", default='cuda', type=str, help="'' auto, or 'cuda', or 'cpu'")
     args = ap.parse_args()
 
     tune_cfg = yaml.safe_load(Path(args.tune_yaml).read_text(encoding="utf-8"))
@@ -75,6 +84,9 @@ def main():
     epochs = int(tune_cfg.get("epochs", 10))
     amp = bool(tune_cfg.get("amp", True))
     num_workers = int(tune_cfg.get("num_workers", 8))
+    prefetch_factor = int(tune_cfg.get("prefetch_factor", 2))
+    use_torch_compile = as_bool(tune_cfg.get("torch_compile", False))
+    torch_compile_mode = str(tune_cfg.get("torch_compile_mode", "default"))
 
     # This is a fixed validation score threshold during TRAIN tuning
     val_score_thresh = float(tune_cfg.get("val_score_thresh", 0.5))
@@ -96,6 +108,8 @@ def main():
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
+    pin_memory = device.type == "cuda"
+    persistent_workers = num_workers > 0
 
     df = load_index_6ch(Path(args.index_csv))
     n = len(df)
@@ -118,7 +132,9 @@ def main():
         aspect_ratios_tt = to_tuple_of_tuples(aspect_ratios) if aspect_ratios is not None else None
 
         fold_mae = []
-        fold_models_cpu: List[Dict[str, torch.Tensor]] = []
+        best_fold_idx = None
+        best_fold_mae = None
+        best_fold_state_cpu: Optional[Dict[str, torch.Tensor]] = None
 
         for fold_i, (tr_idx, va_idx) in enumerate(folds, start=1):
             print(f"\n--- Fold {fold_i}/{k} ---")
@@ -131,21 +147,26 @@ def main():
 
             batch_size = int(params.get("batch_size", 2))
 
+            dl_kwargs = {
+                "num_workers": num_workers,
+                "pin_memory": pin_memory,
+                "persistent_workers": persistent_workers,
+                "collate_fn": detection_collate,
+            }
+            if num_workers > 0:
+                dl_kwargs["prefetch_factor"] = prefetch_factor
+
             dl_tr = DataLoader(
                 ds_tr,
                 batch_size=batch_size,
                 shuffle=True,
-                num_workers=num_workers,
-                pin_memory=True,
-                collate_fn=detection_collate,
+                **dl_kwargs,
             )
             dl_va = DataLoader(
                 ds_va,
                 batch_size=1,
                 shuffle=False,
-                num_workers=num_workers,
-                pin_memory=True,
-                collate_fn=detection_collate,
+                **dl_kwargs,
             )
 
             model = build_frcnn_resnet50_fpn_coco_6ch(
@@ -157,6 +178,8 @@ def main():
                 box_nms_thresh=float(params.get("box_nms_thresh", 0.5)),
             )
             model.to(device)
+            if use_torch_compile and device.type == "cuda" and hasattr(torch, "compile"):
+                model = torch.compile(model, mode=torch_compile_mode)
 
             optimizer = build_optimizer_two_groups(
                 model,
@@ -180,11 +203,15 @@ def main():
                 score_thresh=val_score_thresh,
                 classes_to_count=classes_to_count,
             )
-            fold_mae.append(float(m["count_mae"]))
+            current_fold_mae = float(m["count_mae"])
+            fold_mae.append(current_fold_mae)
             print(f"  val(score={val_score_thresh:.2f}) count_mae={m['count_mae']:.4f} bias={m['count_bias']:.4f}")
 
-            model_state_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-            fold_models_cpu.append(model_state_cpu)
+            if best_fold_mae is None or current_fold_mae < best_fold_mae:
+                state_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+                best_fold_mae = current_fold_mae
+                best_fold_idx = fold_i - 1
+                best_fold_state_cpu = {k: v.detach().cpu() for k, v in state_model.state_dict().items()}
 
             del model
             torch.cuda.empty_cache()
@@ -207,12 +234,14 @@ def main():
         print(f"\nTRAIN TRIAL {trial_id} summary: mean_mae={mean_mae:.4f} ± {std_mae:.4f}")
 
         if best_overall is None or mean_mae < best_overall[0]:
-            best_fold_idx = int(np.argmin(fold_mae))
+            if best_fold_idx is None or best_fold_state_cpu is None:
+                raise RuntimeError(f"No best fold state captured for trial {trial_id}")
+
             best_fold_id = best_fold_idx + 1
             best_overall = (mean_mae, trial_id, params, best_fold_idx)
 
             best_ckpt = {
-                "model": fold_models_cpu[best_fold_idx],
+                "model": best_fold_state_cpu,
                 "trial_id": trial_id,
                 "fold": best_fold_id,
                 "fold_count_mae": float(fold_mae[best_fold_idx]),

@@ -11,8 +11,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch: int, scaler=No
     n = 0
 
     for it, (images, targets) in enumerate(data_loader, start=1):
-        images = [img.to(device) for img in images]
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        images = [img.to(device, non_blocking=True) for img in images]
+        targets = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in targets]
 
         optimizer.zero_grad(set_to_none=True)
 

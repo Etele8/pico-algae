@@ -13,3 +13,9 @@ def seed_everything(seed: int = 42) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    try:
+        torch.set_float32_matmul_precision("high")
+    except AttributeError:
+        pass

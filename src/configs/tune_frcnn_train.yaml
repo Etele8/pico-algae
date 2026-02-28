@@ -5,6 +5,10 @@ epochs: 10
 amp: true
 num_workers: 8
 
+torch_compile: true
+torch_compile_mode: default
+
+
 classes_to_count: [1, 2, 3]
 
 val_score_thresh: 0.5
@@ -26,7 +30,7 @@ space:
        [0.75, 1.0, 1.33],
        [0.75, 1.0, 1.33]]
   trainable_backbone_layers: [2, 3]
-  batch_size: [1, 2]
+  batch_size: [4, 8]
   lr_backbone: [1e-5, 2e-5]
   lr_heads: [1e-4, 2e-4]
   weight_decay: [1e-4]

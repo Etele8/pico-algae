@@ -42,7 +42,7 @@ def evaluate_count_metrics(
         return float(np.mean(x)) if len(x) else 0.0
 
     for images, targets in data_loader:
-        images = [img.to(device) for img in images]
+        images = [img.to(device, non_blocking=True) for img in images]
         outputs = model(images)
 
         for out, tgt in zip(outputs, targets):
