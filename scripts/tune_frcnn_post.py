@@ -18,14 +18,15 @@ from src.utils.seed import seed_everything
 from src.utils.io import ensure_dir
 from src.utils.logging import append_jsonl
 
-from src.data.dataset_index import load_index
-from src.data.pico_dataset import PicoOgDetectionDataset
+from src.data.dataset_index_6ch import load_index_6ch
+from src.data.pico_dataset_6ch import PicoOgRedDetectionDataset
 from src.data.collate import detection_collate
 from src.data.transforms import IdentityTransform
 
-from src.models.frcnn import build_frcnn_resnet50_fpn_coco
+from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
 from src.train.evaluate import evaluate_count_metrics
 
+# python scripts/tune_frcnn_post.py --index_csv data/processed/dataset_2048x1500_webp/index.csv --post_yaml src/configs/tune_frcnn_post.yaml --checkpoint runs/tuning/train/best_train_model.pt --out_dir runs/tuning/post --device cuda
 
 def to_tuple_of_tuples(x: Any):
     return tuple(tuple(v) for v in x)
