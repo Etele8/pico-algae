@@ -3,7 +3,7 @@ k_folds: 5
 trials: 12
 epochs: 10
 amp: true
-num_workers: 16
+num_workers: 8
 
 classes_to_count: [1, 2, 3]
 

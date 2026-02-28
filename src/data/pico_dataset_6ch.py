@@ -26,8 +26,20 @@ class PicoClasses:
         return {1: "EUK", 2: "FE", 3: "FC", 4: "colony"}.get(int(tv_label), f"class_{tv_label}")
 
 
-def _imread_bgr(path: Path) -> np.ndarray:
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+@dataclass(frozen=True)
+class _SampleRecord:
+    og_path: str
+    red_path: str
+    label_path: str
+    boxes: np.ndarray
+    labels: np.ndarray
+
+
+_LABEL_CACHE: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _imread_bgr(path: str) -> np.ndarray:
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
         raise FileNotFoundError(f"Could not read image: {path}")
     return img
@@ -65,6 +77,14 @@ def _parse_label_txt(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     return np.asarray(boxes, np.float32), np.asarray(labels, np.int64)
 
 
+def _get_cached_labels(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    cached = _LABEL_CACHE.get(path)
+    if cached is None:
+        cached = _parse_label_txt(Path(path))
+        _LABEL_CACHE[path] = cached
+    return cached
+
+
 class PicoOgRedDetectionDataset(Dataset):
     """
     6-channel dataset: concat [og_rgb, red_rgb] -> (6,H,W), float32 in [0,1].
@@ -77,21 +97,30 @@ class PicoOgRedDetectionDataset(Dataset):
         transform: Optional[Callable[[torch.Tensor, Dict], Tuple[torch.Tensor, Dict]]] = None,
         keep_empty: bool = True,
     ):
-        self.df = df.reset_index(drop=True)
         self.transform = transform
         self.keep_empty = keep_empty
+        self.records = []
+        for r in df.reset_index(drop=True).itertuples(index=False):
+            label_path = str(r.label_path)
+            boxes, labels = _get_cached_labels(label_path)
+            self.records.append(
+                _SampleRecord(
+                    og_path=str(r.og_webp),
+                    red_path=str(r.red_webp),
+                    label_path=label_path,
+                    boxes=boxes,
+                    labels=labels,
+                )
+            )
 
     def __len__(self) -> int:
-        return len(self.df)
+        return len(self.records)
 
     def __getitem__(self, idx: int):
-        r = self.df.iloc[idx]
-        og_path = Path(r["og_webp"])
-        red_path = Path(r["red_webp"])
-        lbl_path = Path(r["label_path"])
+        r = self.records[idx]
 
-        og_bgr = _imread_bgr(og_path)
-        red_bgr = _imread_bgr(red_path)
+        og_bgr = _imread_bgr(r.og_path)
+        red_bgr = _imread_bgr(r.red_path)
 
         og_rgb = cv2.cvtColor(og_bgr, cv2.COLOR_BGR2RGB)
         red_rgb = cv2.cvtColor(red_bgr, cv2.COLOR_BGR2RGB)
@@ -100,17 +129,15 @@ class PicoOgRedDetectionDataset(Dataset):
         if red_rgb.shape[:2] != (h, w):
             raise ValueError(
                 f"Size mismatch og vs red for idx={idx}: og={og_rgb.shape[:2]} red={red_rgb.shape[:2]} "
-                f"({og_path} vs {red_path})"
+                f"({r.og_path} vs {r.red_path})"
             )
-
-        boxes_np, labels_np = _parse_label_txt(lbl_path)
 
         og_t = torch.from_numpy(og_rgb).permute(2, 0, 1).contiguous().float() / 255.0
         red_t = torch.from_numpy(red_rgb).permute(2, 0, 1).contiguous().float() / 255.0
         img_t = torch.cat([og_t, red_t], dim=0)  # (6,H,W)
 
-        boxes = torch.from_numpy(boxes_np).float()
-        labels = torch.from_numpy(labels_np).long()
+        boxes = torch.from_numpy(r.boxes.copy()).float()
+        labels = torch.from_numpy(r.labels.copy()).long()
 
         if boxes.numel() > 0:
             clip_boxes_xyxy_(boxes, w=w, h=h)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,9 @@ from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN_ResNet50_FPN_Weights
+
+
+_COCO_STATE_6CH_CACHE: Dict[float, Dict[str, torch.Tensor]] = {}
 
 
 def _expand_conv1_weight_3_to_6(w3: torch.Tensor, extra_scale: float = 0.5) -> torch.Tensor:
@@ -23,6 +26,23 @@ def _expand_conv1_weight_3_to_6(w3: torch.Tensor, extra_scale: float = 0.5) -> t
     w_extra = w3.clone() * float(extra_scale)
     w6 = torch.cat([w3, w_extra], dim=1)
     return w6
+
+
+def _get_coco_state_dict_6ch(extra_scale: float) -> Dict[str, torch.Tensor]:
+    cached = _COCO_STATE_6CH_CACHE.get(float(extra_scale))
+    if cached is not None:
+        return cached
+
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    state = weights.get_state_dict(progress=True)
+
+    key = "backbone.body.conv1.weight"
+    if key not in state:
+        raise KeyError(f"Expected key {key!r} in COCO state dict, found {len(state)} keys")
+
+    state[key] = _expand_conv1_weight_3_to_6(state[key], extra_scale=extra_scale)
+    _COCO_STATE_6CH_CACHE[float(extra_scale)] = state
+    return state
 
 
 def build_frcnn_resnet50_fpn_coco_6ch(
@@ -83,18 +103,8 @@ def build_frcnn_resnet50_fpn_coco_6ch(
         image_std=[0.229, 0.224, 0.225, 0.229, 0.224, 0.225],
     )
 
-    # ---- Load COCO weights, but adapt conv1 weight to 6ch ----
-    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
-    state = weights.get_state_dict(progress=True)
-
-    k = "backbone.body.conv1.weight"
-    if k not in state:
-        raise KeyError(f"Expected key {k!r} in COCO state dict, found {len(state)} keys")
-
-    w3 = state[k]
-    state[k] = _expand_conv1_weight_3_to_6(w3, extra_scale=extra_scale)
-
-    missing, unexpected = model.load_state_dict(state, strict=False)
+    state = _get_coco_state_dict_6ch(extra_scale=extra_scale)
+    model.load_state_dict(state, strict=False)
 
     # Replace ROI head for num_classes
     in_features = model.roi_heads.box_predictor.cls_score.in_features
