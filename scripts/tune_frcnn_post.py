@@ -88,7 +88,7 @@ def main():
     print("Device:", device)
 
     # Load dataset and folds
-    df = load_index(Path(args.index_csv))
+    df = load_index_6ch(Path(args.index_csv))
     n = len(df)
     folds = kfold_indices(n, k=k, seed=seed)
 
@@ -107,7 +107,7 @@ def main():
     fold_val_loaders = []
     for fold_i, (_tr_idx, va_idx) in enumerate(folds, start=1):
         df_va = df.iloc[va_idx].reset_index(drop=True)
-        ds_va = PicoOgDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
+        ds_va = PicoOgRedDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
         dl_va = DataLoader(
             ds_va,
             batch_size=1,
@@ -135,7 +135,7 @@ def main():
         fold_bias = []
 
         # Rebuild model with current post params (NMS + dets) and load SAME weights
-        model = build_frcnn_resnet50_fpn_coco(
+        model = build_frcnn_resnet50_fpn_coco_6ch(
             num_classes=5,
             trainable_backbone_layers=int(base_params.get("trainable_backbone_layers", 2)),
             anchor_sizes=anchor_sizes_tt,
