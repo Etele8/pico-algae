@@ -2,16 +2,51 @@ seed: 42
 k_folds: 5
 num_workers: 8
 
+# Count MAE objective will include these labels
 classes_to_count: [1, 2, 3, 4]
 
-score_thresh_grid: [0.15, 0.20, 0.25]
+# Global score threshold (applied before class filtering)
+score_thresh_grid: [0.05, 0.08, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25, 0.30, 0.35, 0.40]
 
-box_nms_thresh_grid: [0.25, 0.30]
+# NMS IoU threshold (lower = more aggressive suppression, higher = keep more overlapping boxes)
+box_nms_thresh_grid: [0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60]
 
-detections_per_image_grid: [300]
+# Max detections after NMS per image
+detections_per_image_grid: [100, 200, 300, 400, 600, 800, 1200]
 
+# Per-class thresholds (override / additional filtering)
+# Keep this as a list of dicts; tune script should iterate these.
+# Includes:
+#  - flat thresholds (all equal)
+#  - EUK a bit higher (often the noisiest class)
+#  - colony slightly lower (if colony is faint / rare)
 per_class_score_thresh_grid:
-  - {"1": 0.30, "2": 0.30, "3": 0.30}
-  - {"1": 0.25, "2": 0.25, "3": 0.25}
-  - {"1": 0.20, "2": 0.20, "3": 0.20}
-  - {"1": 0.15, "2": 0.15, "3": 0.15}
+  # Flat (coarse sweep)
+  - {"1": 0.05, "2": 0.05, "3": 0.05, "4": 0.05}
+  - {"1": 0.08, "2": 0.08, "3": 0.08, "4": 0.08}
+  - {"1": 0.10, "2": 0.10, "3": 0.10, "4": 0.10}
+  - {"1": 0.12, "2": 0.12, "3": 0.12, "4": 0.12}
+  - {"1": 0.15, "2": 0.15, "3": 0.15, "4": 0.15}
+  - {"1": 0.18, "2": 0.18, "3": 0.18, "4": 0.18}
+  - {"1": 0.20, "2": 0.20, "3": 0.20, "4": 0.20}
+  - {"1": 0.25, "2": 0.25, "3": 0.25, "4": 0.25}
+  - {"1": 0.30, "2": 0.30, "3": 0.30, "4": 0.30}
+  - {"1": 0.35, "2": 0.35, "3": 0.35, "4": 0.35}
+
+  # EUK stricter (reduce EUK false positives)
+  - {"1": 0.15, "2": 0.10, "3": 0.10, "4": 0.10}
+  - {"1": 0.20, "2": 0.12, "3": 0.12, "4": 0.12}
+  - {"1": 0.25, "2": 0.15, "3": 0.15, "4": 0.15}
+  - {"1": 0.30, "2": 0.18, "3": 0.18, "4": 0.18}
+  - {"1": 0.35, "2": 0.20, "3": 0.20, "4": 0.20}
+
+  # Colony a bit looser (if colony is harder to score)
+  - {"1": 0.15, "2": 0.15, "3": 0.15, "4": 0.10}
+  - {"1": 0.20, "2": 0.20, "3": 0.20, "4": 0.12}
+  - {"1": 0.25, "2": 0.25, "3": 0.25, "4": 0.15}
+  - {"1": 0.30, "2": 0.30, "3": 0.30, "4": 0.18}
+
+  # Mix: EUK stricter + colony looser
+  - {"1": 0.25, "2": 0.15, "3": 0.15, "4": 0.10}
+  - {"1": 0.30, "2": 0.18, "3": 0.18, "4": 0.12}
+  - {"1": 0.35, "2": 0.20, "3": 0.20, "4": 0.15}
