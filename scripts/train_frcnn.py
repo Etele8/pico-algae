@@ -11,12 +11,12 @@ from src.utils.seed import seed_everything
 from src.utils.io import ensure_dir
 from src.utils.logging import append_jsonl
 
-from src.data.dataset_index import load_index, random_split_df
-from src.data.pico_dataset import PicoOgDetectionDataset
+from src.data.dataset_index_6ch import load_index_6ch, random_split_df
+from src.data.pico_dataset_6ch import PicoOgRedDetectionDataset
 from src.data.collate import detection_collate
 from src.data.transforms import IdentityTransform, RandomHorizontalFlip
 
-from src.models.frcnn import build_frcnn_resnet50_fpn_coco
+from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
 from src.models.weights import save_checkpoint
 
 from src.train.optimizer import build_optimizer_two_groups
@@ -25,6 +25,7 @@ from src.train.amp import get_scaler
 from src.train.train_one_epoch import train_one_epoch
 from src.train.evaluate import evaluate_count_metrics
 
+# python scripts/train_frcnn.py --index_csv data/processed/dataset_2048x1500_webp/index.csv --out_dir runs/train_run --train_yaml src/configs/train_frcnn.yaml
 
 def to_tuple_of_tuples(x):
     return tuple(tuple(v) for v in x)
@@ -83,7 +84,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    df = load_index(Path(args.index_csv))
+    df = load_index_6ch(Path(args.index_csv))
     split = random_split_df(df, val_frac=val_frac, seed=seed)
 
     # transforms (keep geometry simple at first)
@@ -92,15 +93,15 @@ def main():
     else:
         tfm = IdentityTransform()
 
-    ds_tr = PicoOgDetectionDataset(split.train, transform=tfm, keep_empty=True)
-    ds_va = PicoOgDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
+    ds_tr = PicoOgRedDetectionDataset(split.train, transform=tfm, keep_empty=True)
+    ds_va = PicoOgRedDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
 
     dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True,
                        num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
     dl_va = DataLoader(ds_va, batch_size=1, shuffle=False,
                        num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
 
-    model = build_frcnn_resnet50_fpn_coco(
+    model = build_frcnn_resnet50_fpn_coco_6ch(
         num_classes=5,
         trainable_backbone_layers=trainable_backbone_layers,
         anchor_sizes=anchor_sizes,
