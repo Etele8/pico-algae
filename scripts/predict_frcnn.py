@@ -13,7 +13,7 @@ from src.inference.image_pairs import discover_og_red_pairs
 from src.inference.folder_dataset import PairOgInferenceDataset, ResizeSpec
 from src.inference.predict import predict_on_loader
 from src.inference.visualize import draw_xyxy, save_vis
-from src.models.frcnn import build_frcnn_resnet50_fpn_coco
+from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
 from src.models.weights import load_checkpoint
 
 
@@ -67,7 +67,7 @@ def main():
     ds = PairOgInferenceDataset(pairs, resize=resize)
     dl = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=detection_collate)
 
-    model = build_frcnn_resnet50_fpn_coco(
+    model = build_frcnn_resnet50_fpn_coco_6ch(
         num_classes=5,
         trainable_backbone_layers=trainable_backbone_layers,
         detections_per_image=detections_per_image,
