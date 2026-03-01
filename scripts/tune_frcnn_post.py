@@ -86,6 +86,8 @@ def main():
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
+    pin_memory = device.type == "cuda"
+    persistent_workers = num_workers > 0
 
     # Load dataset and folds
     df = load_index_6ch(Path(args.index_csv))
@@ -108,13 +110,20 @@ def main():
     for fold_i, (_tr_idx, va_idx) in enumerate(folds, start=1):
         df_va = df.iloc[va_idx].reset_index(drop=True)
         ds_va = PicoOgRedDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
+        dl_kwargs = {
+            "num_workers": num_workers,
+            "pin_memory": pin_memory,
+            "persistent_workers": persistent_workers,
+            "collate_fn": detection_collate,
+        }
+        if num_workers > 0:
+            dl_kwargs["prefetch_factor"] = int(post_cfg.get("prefetch_factor", 2))
+
         dl_va = DataLoader(
             ds_va,
             batch_size=1,
             shuffle=False,
-            num_workers=num_workers,
-            pin_memory=True,
-            collate_fn=detection_collate,
+            **dl_kwargs,
         )
         fold_val_loaders.append(dl_va)
 

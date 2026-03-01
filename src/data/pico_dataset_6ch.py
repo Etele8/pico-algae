@@ -144,7 +144,7 @@ class PicoOgRedDetectionDataset(Dataset):
             boxes, labels = remove_degenerate(boxes, labels)
 
         if (not self.keep_empty) and (boxes.shape[0] == 0):
-            return self.__getitem__((idx + 1) % len(self.df))
+            return self.__getitem__((idx + 1) % len(self.records))
 
         area = (boxes[:, 2] - boxes[:, 0]).clamp(min=0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0)
         iscrowd = torch.zeros((boxes.shape[0],), dtype=torch.int64)
