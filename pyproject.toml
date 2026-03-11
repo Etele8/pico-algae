@@ -1,7 +1,11 @@
 [project]
 name = "pico-algae"
 version = "0.1.0"
+description = "Pico-algae detection and counting in fluorescence microscopy images using PyTorch."
 requires-python = ">=3.10"
+
+[project.scripts]
+pico-algae-infer = "pico_algae.inference:main"
 
 [build-system]
 requires = ["setuptools>=69"]
