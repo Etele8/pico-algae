@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.torch
 __pycache__/
 *.pyc
 
