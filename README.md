@@ -1,12 +1,14 @@
 # Pico-Algae Detection using Deep Learning
 
 ## Overview
-This project detects and counts pico-algae cells in microscopy images using a Faster R-CNN detector.  
-It is useful for fast, repeatable analysis of samples where manual counting is slow and error-prone.  
-The pipeline works on paired microscope images (`*_og.png` and `*_red.png`) and predicts cell-level bounding boxes with class labels.  
+
+This project detects and counts pico-algae cells in microscopy images using a Faster R-CNN detector.
+It is useful for fast, repeatable analysis of samples where manual counting is slow and error-prone.
+The pipeline works on paired microscope images (`*_og.png` and `*_red.png`) and predicts cell-level bounding boxes with class labels.
 The repository includes training, tuning, and inference utilities for reproducible experiments.
 
 ## Example Results
+
 Input image:
 
 ![Example input](examples/input_images/example_input_1_og.png)
@@ -18,6 +20,7 @@ Detections with bounding boxes:
 ![Detection 3](examples/detection_results/example_detection_3.png)
 
 ## Pipeline Overview
+
 `Image -> preprocessing -> object detection -> counting`
 
 1. Load microscopy image pair (`og` + `red`).
@@ -26,17 +29,20 @@ Detections with bounding boxes:
 4. Filter predictions by confidence and count detections.
 
 ## Model
-The detector is a 6-channel Faster R-CNN (`ResNet50-FPN`) that fuses `og` and `red` images.  
-Training uses annotated pico-algae microscopy data with bounding boxes and four foreground classes (`EUK`, `FE`, `FC`, `colony`).  
+
+The detector is a 6-channel Faster R-CNN (`ResNet50-FPN`) that fuses `og` and `red` images.
+Training uses annotated pico-algae microscopy data with bounding boxes and four foreground classes (`EUK`, `FE`, `FC`, `colony`).
 The setup is tuned for dense small-object detection where many tiny cells appear in one frame.
 
 ## Installation
+
 ```bash
 pip install -r requirements.txt
 pip install -e .
 ```
 
 ## Usage
+
 Single-image inference (package entrypoint):
 
 ```bash
@@ -68,12 +74,14 @@ python main.py infer --image examples/input_images/test.jpg
 ```
 
 ## Results
+
 - Classes detected: `EUK`, `FE`, `FC`, `colony`.
 - Best post-processing tuning result (`runs/tuning/post_best_mae/tuning_post_results.csv`):
   `mean_count_mae=2.4239`, `std_count_mae=0.5050` across 5 folds.
 - Dense-scene challenge: small, overlapping cells can increase count error in crowded regions, so threshold and NMS tuning materially affect counting quality.
 
 ## Project Structure
+
 ```text
 pico-algae-detection/
 ├── README.md
@@ -105,12 +113,14 @@ pico-algae-detection/
 ```
 
 ## Technologies
+
 - Python
 - PyTorch
 - OpenCV
 - NumPy
 
 ## Folder Guide
+
 - `src/prep`: dataset preprocessing and annotation conversion scripts.
 - `src/train`: training loop, optimization, scheduler, and evaluation code.
 - `src/inference`: prediction and visualization utilities.
