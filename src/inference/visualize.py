@@ -5,7 +5,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from src.data.pico_dataset import PicoClasses
+from src.datasets.pico_dataset import PicoClasses
 from src.utils.io import ensure_dir
 
 

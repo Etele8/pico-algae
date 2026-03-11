@@ -99,6 +99,7 @@ pico-algae-detection/
 ├── notebooks/
 │   └── exploration.ipynb
 ├── scripts/
+│   ├── prep/
 │   ├── train_frcnn.py
 │   ├── predict_frcnn.py
 │   └── inference.py
@@ -112,6 +113,12 @@ pico-algae-detection/
 └── models/
 ```
 
+## Repo Conventions
+
+- `src/`: importable implementation code (model, training logic, inference utilities, helpers).
+- `scripts/`: runnable entrypoints and operational scripts.
+- `scripts/prep/`: dataset preparation and one-off data processing utilities.
+
 ## Technologies
 
 - Python
@@ -121,9 +128,9 @@ pico-algae-detection/
 
 ## Folder Guide
 
-- `src/prep`: dataset preprocessing and annotation conversion scripts.
 - `src/train`: training loop, optimization, scheduler, and evaluation code.
 - `src/inference`: prediction and visualization utilities.
 - `src/models`: Faster R-CNN model builders and checkpoint utilities.
 - `src/configs`: YAML configs for train, predict, and tuning.
 - `src/utils`: shared helper functions for I/O, seeding, logging, and box ops.
+- `scripts/prep`: dataset preprocessing and annotation conversion scripts.

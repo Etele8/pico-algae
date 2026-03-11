@@ -18,10 +18,10 @@ from src.utils.seed import seed_everything
 from src.utils.io import ensure_dir
 from src.utils.logging import append_jsonl
 
-from src.data.dataset_index_6ch import load_index_6ch
-from src.data.pico_dataset_6ch import PicoOgRedDetectionDataset
-from src.data.collate import detection_collate
-from src.data.transforms import IdentityTransform
+from src.datasets.dataset_index_6ch import load_index_6ch
+from src.datasets.pico_dataset_6ch import PicoOgRedDetectionDataset
+from src.datasets.collate import detection_collate
+from src.datasets.transforms import IdentityTransform
 
 from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
 from src.train.evaluate import evaluate_count_metrics

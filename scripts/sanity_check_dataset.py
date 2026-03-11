@@ -5,8 +5,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.data.dataset_index import load_index
-from src.data.pico_dataset import PicoOgDetectionDataset
+from src.datasets.dataset_index import load_index
+from src.datasets.pico_dataset import PicoOgDetectionDataset
 from src.inference.visualize import draw_xyxy
 
 # usage python scripts\sanity_check_dataset.py --index_csv data\processed\dataset_2048x1500_webp\index.csv --n 20

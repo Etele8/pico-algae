@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 # python scripts/predict_frcnn.py --images_dir data/raw/images_og --ckpt runs/train_run/checkpoints/best_mae.pt --out_dir runs/predict_run --predict_yaml src/configs/predict_frcnn.yaml
 
-from src.data.collate import detection_collate
+from src.datasets.collate import detection_collate
 from src.inference.image_pairs import discover_og_red_pairs
 from src.inference.folder_dataset import PairOgInferenceDataset, ResizeSpec
 from src.inference.predict import predict_on_loader
