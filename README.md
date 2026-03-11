@@ -15,9 +15,9 @@ Input image:
 
 Detections with bounding boxes:
 
-![Detection 1](examples/detection_results/example_detection_1.png)
-![Detection 2](examples/detection_results/example_detection_2.png)
-![Detection 3](examples/detection_results/example_detection_3.png)
+![Detection 1](examples/detection_results/Example_detection_1.png)
+![Detection 2](examples/detection_results/Example_detection_2.png)
+![Detection 3](examples/detection_results/Example_detection_3.png)
 
 ## Pipeline Overview
 
