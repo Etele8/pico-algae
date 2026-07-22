@@ -302,6 +302,16 @@ RESULTS_CSS = """
   .count-chip { display:inline-flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums; font-size:.9rem; }
   .help { color:var(--muted); font-size:.8rem; }
   input[type=range] { accent-color:var(--accent); vertical-align:middle; }
+  .warn { background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.4); color:#fbbf24;
+          border-radius:10px; padding:8px 12px; margin:4px 0 12px; font-size:.9rem; }
+  .colonypanel { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:6;
+          display:flex; gap:10px; align-items:center; background:var(--card); border:1px solid var(--line);
+          border-radius:12px; padding:9px 14px; box-shadow:0 8px 28px rgba(0,0,0,.45); flex-wrap:wrap; }
+  .colonypanel.hidden { display:none; }
+  .colonypanel input[type=number] { width:72px; text-align:center; font-size:1.1rem; background:#0b1222;
+          color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px; }
+  .stepbtn { border:1px solid var(--line); background:#0b1222; color:var(--fg); border-radius:8px;
+          width:34px; height:34px; font-size:1.2rem; line-height:1; cursor:pointer; }
 </style>
 """
 
@@ -327,30 +337,66 @@ RESULTS_JS = r"""
   const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 
   function shown(img){ return img.dets.filter(d => d.added || d.score >= img.thr); }
-  function counts(img){ const c={}; ALL.forEach(k=>c[k]=0); shown(img).forEach(d=>c[d.cls]++); return c; }
-  function total(img){ const c=counts(img); return COUNTED.reduce((a,k)=>a+(c[k]||0),0); }
+  function counts(img){
+    const cls={}; ALL.forEach(k=>cls[k]=0);
+    let colonies=0, needReview=0;
+    shown(img).forEach(d=>{
+      if(d.cls===4){
+        colonies++;
+        if(d.colClass && d.colCount>0) cls[d.colClass]+=d.colCount;   // colony cells fold into their class
+        else needReview++;                                            // flagged but not yet assigned
+      } else { cls[d.cls]++; }
+    });
+    return { cls, colonies, needReview };
+  }
+  function total(img){ const c=counts(img).cls; return COUNTED.reduce((a,k)=>a+(c[k]||0),0); }
 
   const app = document.getElementById('app');
 
-  function rectsSvg(img){
-    return shown(img).map(d =>
-      `<rect x="${d.x1}" y="${d.y1}" width="${d.x2-d.x1}" height="${d.y2-d.y1}" `+
-      `fill="none" stroke="${COLORS[d.cls]}" stroke-width="2" vector-effect="non-scaling-stroke"/>`
-    ).join('');
+  const UNASSIGNED_COL = 'rgb(236,72,153)';  // magenta = colony that still needs a count
+  function colonyMarkup(d){
+    const assigned = d.colClass && d.colCount>0;
+    if(!assigned) return '';   // unassigned: box only, so the cells stay visible to count
+    const h=d.y2-d.y1;
+    const fs=Math.max(12, Math.min(h*0.28, 40));
+    const x=d.x1+fs*0.3, y=d.y1+fs*0.3;   // count in the top-left corner, out of the way
+    return `<text x="${x}" y="${y}" font-size="${fs}" text-anchor="start" dominant-baseline="hanging" `+
+      `style="paint-order:stroke;stroke:#000;stroke-width:${fs*0.16}px;fill:${COLORS[d.colClass]};font-weight:800;pointer-events:none">${d.colCount}</text>`;
   }
+  function detRect(d, opts){
+    opts = opts || {};
+    const idAttr = opts.id ? ` data-id="${d.id}"` : '';
+    const clsAttr = opts.cls ? ` class="${opts.cls}"` : '';
+    if(d.cls===4){
+      const assigned = d.colClass && d.colCount>0;
+      const stroke = assigned ? COLORS[4] : UNASSIGNED_COL;
+      const dash = assigned ? '' : ' stroke-dasharray="10 6"';
+      const sw = opts.sw || 3;
+      return `<rect${clsAttr}${idAttr} x="${d.x1}" y="${d.y1}" width="${d.x2-d.x1}" height="${d.y2-d.y1}" `+
+        `fill="none" stroke="${stroke}" stroke-width="${sw}"${dash} vector-effect="non-scaling-stroke"/>` + colonyMarkup(d);
+    }
+    const sw = opts.sw || 2;
+    return `<rect${clsAttr}${idAttr} x="${d.x1}" y="${d.y1}" width="${d.x2-d.x1}" height="${d.y2-d.y1}" `+
+      `fill="none" stroke="${COLORS[d.cls]}" stroke-width="${sw}" vector-effect="non-scaling-stroke"/>`;
+  }
+  function rectsSvg(img){ return shown(img).map(d => detRect(d)).join(''); }
 
   function renderApp(){
     const head = COUNTED.map(c=>`<th class="num">${esc(NAMES[c])}</th>`).join('');
-    let rows=''; const tot={}; COUNTED.forEach(c=>tot[c]=0); let grand=0;
+    let rows=''; const tot={}; COUNTED.forEach(c=>tot[c]=0); let grand=0, colTot=0, reviewTot=0;
     PICO.images.forEach(img=>{
-      const c=counts(img), t=total(img);
-      rows += `<tr><td>${esc(img.name)}</td>`+COUNTED.map(k=>`<td class="num">${c[k]||0}</td>`).join('')
-            + `<td class="num total">${t}</td></tr>`;
-      COUNTED.forEach(k=>tot[k]+=(c[k]||0)); grand+=t;
+      const r=counts(img), t=total(img);
+      const colCell = `${r.colonies}` + (r.needReview ? ` <span style="color:#fbbf24">(${r.needReview}?)</span>` : '');
+      rows += `<tr><td>${esc(img.name)}</td>`+COUNTED.map(k=>`<td class="num">${r.cls[k]||0}</td>`).join('')
+            + `<td class="num">${colCell}</td><td class="num total">${t}</td></tr>`;
+      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonies; reviewTot+=r.needReview;
     });
     const foot = COUNTED.map(k=>`<td class="num">${tot[k]}</td>`).join('');
     const legend = ALL.map(c=>`<span class="lg"><span class="sw" style="background:${COLORS[c]}"></span>${esc(NAMES[c])}`
-      + (COUNTED.includes(c)?'':' (not counted)') + `</span>`).join('');
+      + (c===4?' (assign count + class)':'') + `</span>`).join('');
+    const warn = reviewTot>0
+      ? `<div class="warn">⚠ ${reviewTot} colon${reviewTot===1?'y':'ies'} still ${reviewTot===1?'needs':'need'} a count &mdash; open the image and assign each flagged (?) cluster.</div>`
+      : '';
 
     let html = `
     <div class="card">
@@ -360,18 +406,21 @@ RESULTS_JS = r"""
       </div>
       <p class="note">Click any image to enlarge, inspect and correct. Counts and the CSV update automatically.</p>
       <div class="legend" style="margin:6px 0 12px">${legend}</div>
+      ${warn}
       <table>
-        <thead><tr><th>Image</th>${head}<th class="num">Total</th></tr></thead>
+        <thead><tr><th>Image</th>${head}<th class="num">Colonies</th><th class="num">Total</th></tr></thead>
         <tbody>${rows}</tbody>
-        <tfoot><tr><td><strong>All images</strong></td>${foot}<td class="num total">${grand}</td></tr></tfoot>
+        <tfoot><tr><td><strong>All images</strong></td>${foot}<td class="num">${colTot}</td><td class="num total">${grand}</td></tr></tfoot>
       </table>
     </div>`;
 
     let cards='';
     PICO.images.forEach((img,i)=>{
-      const c=counts(img);
-      const pills = COUNTED.map(k=>`<span class="pill"><span class="dot" style="background:${COLORS[k]}"></span> ${esc(NAMES[k])}: <strong>${c[k]||0}</strong></span>`).join('')
-        + `<span class="pill total">Total: ${total(img)}</span>`;
+      const r=counts(img);
+      const pills = COUNTED.map(k=>`<span class="pill"><span class="dot" style="background:${COLORS[k]}"></span> ${esc(NAMES[k])}: <strong>${r.cls[k]||0}</strong></span>`).join('')
+        + `<span class="pill total">Total: ${total(img)}</span>`
+        + (r.colonies?`<span class="pill"><span class="dot" style="background:${COLORS[4]}"></span> colonies: <strong>${r.colonies}</strong></span>`:'')
+        + (r.needReview?`<span class="pill" style="color:#fbbf24">⚠ ${r.needReview} to count</span>`:'');
       cards += `
       <div class="imgcard">
         <h3>${esc(img.name)}</h3>
@@ -403,14 +452,14 @@ RESULTS_JS = r"""
   // ---------- CSV (reflects live corrections) ----------
   function csvCell(v){ v=String(v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
   function downloadCSV(){
-    const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['total'])];
-    const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0;
+    const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colonies','total'])];
+    const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0;
     PICO.images.forEach(img=>{
-      const c=counts(img), t=total(img);
-      rows.push([img.name].concat(COUNTED.map(k=>c[k]||0),[t]));
-      COUNTED.forEach(k=>tot[k]+=(c[k]||0)); grand+=t;
+      const r=counts(img), t=total(img);
+      rows.push([img.name].concat(COUNTED.map(k=>r.cls[k]||0),[r.colonies, t]));
+      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonies;
     });
-    rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[grand]));
+    rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[colTot, grand]));
     const csv = rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
     dl(new Blob([csv],{type:'text/csv'}), 'pico_counts.csv');
   }
@@ -449,6 +498,14 @@ RESULTS_JS = r"""
           <g id="erects"></g>
           <rect id="etemp" style="display:none" vector-effect="non-scaling-stroke" stroke-width="2"></rect>
         </g></svg>
+        <div id="ecolony" class="colonypanel hidden">
+          <span class="help">🧩 Colony &mdash; cells inside:</span>
+          <button class="stepbtn" id="ecolMinus" title="one fewer">−</button>
+          <input type="number" id="ecolcount" min="0" step="1" value="0">
+          <button class="stepbtn" id="ecolPlus" title="one more">+</button>
+          <span class="help">class:</span>
+          <span id="ecolclasses"></span>
+        </div>
       </div>
       <div class="mfoot">
         <span id="ecounts"></span>
@@ -461,19 +518,30 @@ RESULTS_JS = r"""
       </div>
       <div class="mbar" style="border-top:1px solid var(--line);border-bottom:0">
         <span class="help">Wheel = zoom · drag = pan · <b>Add box</b>: drag on a cell · click a box to select ·
-          keys <b>1-${ALL.length}</b> set class · <b>Del</b> removes · <b>←/→</b> images · <b>Esc</b> closes</span>
+          keys <b>1-${ALL.length}</b> set class · <b>Del</b> removes · <b>←/→</b> images · <b>Esc</b> closes ·
+          select a <b>colony</b> to enter its cell count &amp; class</span>
       </div>`;
     document.body.appendChild(m);
     const $=id=>m.querySelector(id);
     ED={ m, svg:$('#esvg'), vp:$('#evp'), img:$('#eimg'), rects:$('#erects'), temp:$('#etemp'),
          title:$('#etitle'), classes:$('#eclasses'), ecounts:$('#ecounts'),
-         thr:$('#ethr'), thrval:$('#ethrval') };
+         thr:$('#ethr'), thrval:$('#ethrval'),
+         colony:$('#ecolony'), colcount:$('#ecolcount'), colclasses:$('#ecolclasses') };
 
     ED.classes.innerHTML = ALL.map(c=>
       `<button class="clsbtn" data-c="${c}"><span class="sw" style="background:${COLORS[c]}"></span>${esc(NAMES[c])}</button>`
     ).join('');
     ED.classes.querySelectorAll('.clsbtn').forEach(b=>
       b.onclick=()=>setClass(+b.dataset.c));
+
+    // colony assignment panel: cell count + which counted class those cells are
+    ED.colclasses.innerHTML = COUNTED.map(c=>
+      `<button class="clsbtn" data-cc="${c}"><span class="sw" style="background:${COLORS[c]}"></span>${esc(NAMES[c])}</button>`
+    ).join('');
+    ED.colclasses.querySelectorAll('.clsbtn').forEach(b=> b.onclick=()=>setColClass(+b.dataset.cc));
+    ED.colcount.addEventListener('input', ()=>setColCount(parseInt(ED.colcount.value,10)||0));
+    $('#ecolMinus').onclick=()=>{ const d=selById(selId); if(d) setColCount((d.colCount||0)-1); };
+    $('#ecolPlus').onclick =()=>{ const d=selById(selId); if(d) setColCount((d.colCount||0)+1); };
 
     $('#emInspect').onclick=()=>setMode('inspect');
     $('#emAdd').onclick=()=>setMode('add');
@@ -523,23 +591,37 @@ RESULTS_JS = r"""
     ED.thrval.textContent = (+img.thr).toFixed(2);
     renderRects();
     renderCounts();
+    updateColonyPanel();
   }
   function renderRects(){
     const img=curImg();
     ED.rects.innerHTML = shown(img).map(d=>{
-      const sel = d.id===selId ? ' sel' : '';
-      return `<rect class="det${sel}" data-id="${d.id}" x="${d.x1}" y="${d.y1}" `+
-        `width="${d.x2-d.x1}" height="${d.y2-d.y1}" stroke="${COLORS[d.cls]}" `+
-        `stroke-width="${d.id===selId?3:2}" vector-effect="non-scaling-stroke"/>`;
+      const sel = d.id===selId;
+      const sw = d.cls===4 ? (sel?4:3) : (sel?3:2);
+      return detRect(d, {cls:'det'+(sel?' sel':''), id:true, sw});
     }).join('');
     ED.rects.querySelectorAll('.det').forEach(r=>
       r.addEventListener('mousedown', e=>{ if(mode==='inspect'){ e.stopPropagation(); selId=+r.dataset.id; renderStage(); } }));
   }
   function renderCounts(){
-    const c=counts(curImg());
-    ED.ecounts.innerHTML = ALL.map(k=>
-      `<span class="count-chip"><span class="sw" style="background:${COLORS[k]}"></span>${esc(NAMES[k])}: <b>${c[k]||0}</b></span>`
-    ).join(' &nbsp; ') + ` &nbsp; <span class="count-chip">Total: <b style="color:var(--accent2)">${total(curImg())}</b></span>`;
+    const r=counts(curImg());
+    let h = COUNTED.map(k=>
+      `<span class="count-chip"><span class="sw" style="background:${COLORS[k]}"></span>${esc(NAMES[k])}: <b>${r.cls[k]||0}</b></span>`
+    ).join(' &nbsp; ');
+    h += ` &nbsp; <span class="count-chip"><span class="sw" style="background:${COLORS[4]}"></span>colonies: <b>${r.colonies}</b></span>`;
+    if(r.needReview>0) h += ` &nbsp; <span class="count-chip" style="color:#fbbf24">⚠ ${r.needReview} unassigned</span>`;
+    h += ` &nbsp; <span class="count-chip">Total: <b style="color:var(--accent2)">${total(curImg())}</b></span>`;
+    ED.ecounts.innerHTML = h;
+  }
+  function updateColonyPanel(){
+    const d=selById(selId);
+    if(d && d.cls===4){
+      ED.colony.classList.remove('hidden');
+      if(document.activeElement!==ED.colcount) ED.colcount.value = d.colCount||0;
+      ED.colclasses.querySelectorAll('.clsbtn').forEach(b=>b.classList.toggle('active', +b.dataset.cc===d.colClass));
+    } else {
+      ED.colony.classList.add('hidden');
+    }
   }
 
   function setMode(m){
@@ -552,7 +634,21 @@ RESULTS_JS = r"""
     activeCls=c;
     ED.classes.querySelectorAll('.clsbtn').forEach(b=>b.classList.toggle('active', +b.dataset.c===c));
     const d=selById(selId);
-    if(d && d.cls!==c){ d.cls=c; renderStage(); }
+    if(d && d.cls!==c){
+      d.cls=c;
+      if(c===4){ if(d.colCount==null) d.colCount=0; if(d.colClass==null) d.colClass=null; }
+      else { d.colCount=undefined; d.colClass=undefined; }
+      renderStage(); renderApp();
+    }
+  }
+  function setColCount(v){
+    const d=selById(selId); if(!d||d.cls!==4) return;
+    d.colCount=Math.max(0, v|0); renderStage(); renderApp();
+  }
+  function setColClass(c){
+    const d=selById(selId); if(!d||d.cls!==4) return;
+    d.colClass=c; if(!(d.colCount>0)) d.colCount=1;   // picking a class implies at least one cell
+    renderStage(); renderApp();
   }
   function selById(id){ return curImg().dets.find(d=>d.id===id); }
   function deleteSel(){
@@ -593,7 +689,8 @@ RESULTS_JS = r"""
       if(r.w>4 && r.h>4){
         const d={id:uid++, cls:activeCls, score:null, added:true,
                  x1:round(r.x), y1:round(r.y), x2:round(r.x+r.w), y2:round(r.y+r.h)};
-        curImg().dets.push(d); selId=d.id; renderStage();
+        if(activeCls===4){ d.colCount=0; d.colClass=null; }   // new colony starts unassigned
+        curImg().dets.push(d); selId=d.id; renderStage(); renderApp();
       }
     }
     panning=false;
@@ -614,7 +711,9 @@ RESULTS_JS = r"""
     selId=null; loadImage();
   }
   function onKey(e){
-    if(e.key==='Escape'){ closeEditor(); return; }
+    const typing = document.activeElement && document.activeElement.tagName==='INPUT';
+    if(e.key==='Escape'){ if(typing){ document.activeElement.blur(); return; } closeEditor(); return; }
+    if(typing) return;   // don't fire shortcuts while entering a colony count
     if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); deleteSel(); return; }
     if(e.key==='ArrowLeft'){ nav(-1); return; }
     if(e.key==='ArrowRight'){ nav(1); return; }
@@ -632,9 +731,24 @@ RESULTS_JS = r"""
     const ctx=cv.getContext('2d'); const im=new Image();
     im.onload=()=>{
       ctx.drawImage(im,0,0);
-      ctx.lineWidth=Math.max(2, img.w/900);
-      shown(img).forEach(d=>{ ctx.strokeStyle=COLORS[d.cls];
-        ctx.strokeRect(d.x1,d.y1,d.x2-d.x1,d.y2-d.y1); });
+      const baseLw=Math.max(2, img.w/900);
+      shown(img).forEach(d=>{
+        if(d.cls===4){
+          const assigned=d.colClass && d.colCount>0;
+          ctx.lineWidth=baseLw; ctx.strokeStyle=assigned?COLORS[4]:UNASSIGNED_COL;
+          ctx.strokeRect(d.x1,d.y1,d.x2-d.x1,d.y2-d.y1);
+          if(assigned){   // count in the top-left corner, cells left visible
+            const h=d.y2-d.y1, fs=Math.max(12, Math.min(h*0.28, 40)), txt=String(d.colCount);
+            const tx=d.x1+fs*0.3, ty=d.y1+fs*0.3;
+            ctx.textAlign='left'; ctx.textBaseline='top'; ctx.font=`800 ${fs}px sans-serif`;
+            ctx.lineWidth=Math.max(2, fs*0.16); ctx.strokeStyle='#000'; ctx.strokeText(txt,tx,ty);
+            ctx.fillStyle=COLORS[d.colClass]; ctx.fillText(txt,tx,ty);
+          }
+        } else {
+          ctx.lineWidth=baseLw; ctx.strokeStyle=COLORS[d.cls];
+          ctx.strokeRect(d.x1,d.y1,d.x2-d.x1,d.y2-d.y1);
+        }
+      });
       cv.toBlob(b=>dl(b, img.name.replace(/\.[^.]+$/,'')+'_checked.png'));
     };
     im.src=img.src;
