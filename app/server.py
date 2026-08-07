@@ -578,11 +578,11 @@ def _append_counts_csv(path: Path, ts: str, name: str, data: dict) -> None:
     with open(path, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if is_new:
-            w.writerow(["timestamp", "name"] + names + ["total", "colonies", "unassigned"])
+            w.writerow(["timestamp", "name"] + names + ["total", "colony_cells", "unassigned"])
         w.writerow(
             [ts, name]
             + [counts.get(n, 0) for n in names]
-            + [data.get("total", 0), data.get("colonies", 0), data.get("unassigned", 0)]
+            + [data.get("total", 0), data.get("colonyCells", 0), data.get("unassigned", 0)]
         )
 
 
@@ -750,15 +750,14 @@ RESULTS_JS = r"""
   function shown(img){ return img.dets.filter(d => d.added || d.score >= img.thr); }
   function counts(img){
     const cls={}; ALL.forEach(k=>cls[k]=0);
-    let colonies=0, needReview=0;
+    let colonyCells=0, needReview=0;   // total cells inside colonies (not the colony count)
     shown(img).forEach(d=>{
       if(d.cls===4){
-        colonies++;
-        if(d.colClass && d.colCount>0) cls[d.colClass]+=d.colCount;   // colony cells fold into their class
+        if(d.colClass && d.colCount>0){ cls[d.colClass]+=d.colCount; colonyCells+=d.colCount; }  // fold into class
         else needReview++;                                            // flagged but not yet assigned
       } else { cls[d.cls]++; }
     });
-    return { cls, colonies, needReview };
+    return { cls, colonyCells, needReview };
   }
   function total(img){ const c=counts(img).cls; return COUNTED.reduce((a,k)=>a+(c[k]||0),0); }
 
@@ -797,10 +796,10 @@ RESULTS_JS = r"""
     let rows=''; const tot={}; COUNTED.forEach(c=>tot[c]=0); let grand=0, colTot=0, reviewTot=0;
     PICO.images.forEach(img=>{
       const r=counts(img), t=total(img);
-      const colCell = `${r.colonies}` + (r.needReview ? ` <span style="color:#fbbf24">(${r.needReview}?)</span>` : '');
+      const colCell = `${r.colonyCells}` + (r.needReview ? ` <span style="color:#fbbf24">(${r.needReview}?)</span>` : '');
       rows += `<tr><td>${esc(img.name)}</td>`+COUNTED.map(k=>`<td class="num">${r.cls[k]||0}</td>`).join('')
             + `<td class="num">${colCell}</td><td class="num total">${t}</td></tr>`;
-      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonies; reviewTot+=r.needReview;
+      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells; reviewTot+=r.needReview;
     });
     const foot = COUNTED.map(k=>`<td class="num">${tot[k]}</td>`).join('');
     const legend = ALL.map(c=>`<span class="lg"><span class="sw" style="background:${COLORS[c]}"></span>${esc(NAMES[c])}`
@@ -815,7 +814,7 @@ RESULTS_JS = r"""
       : 'Click any image to enlarge, inspect and correct. Counts and the CSV update automatically.';
     const tableHtml = n ? `
       <table>
-        <thead><tr><th>Image</th>${head}<th class="num">Colonies</th><th class="num">Total</th></tr></thead>
+        <thead><tr><th>Image</th>${head}<th class="num">Colony cells</th><th class="num">Total</th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr><td><strong>All images</strong></td>${foot}<td class="num">${colTot}</td><td class="num total">${grand}</td></tr></tfoot>
       </table>` : '<p class="note">Waiting for the first capture… take a screenshot from the Pico Capture window.</p>';
@@ -846,7 +845,7 @@ RESULTS_JS = r"""
       const r=counts(img);
       const pills = COUNTED.map(k=>`<span class="pill"><span class="dot" style="background:${COLORS[k]}"></span> ${esc(NAMES[k])}: <strong>${r.cls[k]||0}</strong></span>`).join('')
         + `<span class="pill total">Total: ${total(img)}</span>`
-        + (r.colonies?`<span class="pill"><span class="dot" style="background:${COLORS[4]}"></span> colonies: <strong>${r.colonies}</strong></span>`:'')
+        + (r.colonyCells?`<span class="pill"><span class="dot" style="background:${COLORS[4]}"></span> colony cells: <strong>${r.colonyCells}</strong></span>`:'')
         + (r.needReview?`<span class="pill" style="color:#fbbf24">⚠ ${r.needReview} to count</span>`:'');
       const redBadge = img.alt ? ` <span class="redbadge">⇄ red (q)</span>` : '';
       cards += `
@@ -890,12 +889,12 @@ RESULTS_JS = r"""
   // ---------- CSV (reflects live corrections) ----------
   function csvCell(v){ v=String(v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
   function buildCsvText(){
-    const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colonies','total'])];
+    const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colony_cells','total'])];
     const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0;
     PICO.images.forEach(img=>{
       const r=counts(img), t=total(img);
-      rows.push([img.name].concat(COUNTED.map(k=>r.cls[k]||0),[r.colonies, t]));
-      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonies;
+      rows.push([img.name].concat(COUNTED.map(k=>r.cls[k]||0),[r.colonyCells, t]));
+      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells;
     });
     rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[colTot, grand]));
     return rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
@@ -1169,7 +1168,7 @@ RESULTS_JS = r"""
     let h = COUNTED.map(k=>
       `<span class="count-chip"><span class="sw" style="background:${COLORS[k]}"></span>${esc(NAMES[k])}: <b>${r.cls[k]||0}</b></span>`
     ).join(' &nbsp; ');
-    h += ` &nbsp; <span class="count-chip"><span class="sw" style="background:${COLORS[4]}"></span>colonies: <b>${r.colonies}</b></span>`;
+    h += ` &nbsp; <span class="count-chip"><span class="sw" style="background:${COLORS[4]}"></span>colony cells: <b>${r.colonyCells}</b></span>`;
     if(r.needReview>0) h += ` &nbsp; <span class="count-chip" style="color:#fbbf24">⚠ ${r.needReview} unassigned</span>`;
     h += ` &nbsp; <span class="count-chip">Total: <b style="color:var(--accent2)">${total(curImg())}</b></span>`;
     if(sel.size>1) h += ` &nbsp; <span class="count-chip" style="color:var(--accent)">${sel.size} selected</span>`;
@@ -1403,7 +1402,7 @@ RESULTS_JS = r"""
     const btn=ED.m.querySelector('#eSave'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
     const finish = (annUri)=>{
       const body={ name: img.name, annotated_png: annUri, saveRaw: wantRaw, saveAnnotated: wantAnn,
-                   total: total(img), colonies: r.colonies, unassigned: r.needReview, counts:{} };
+                   total: total(img), colonyCells: r.colonyCells, unassigned: r.needReview, counts:{} };
       COUNTED.forEach(k=>body.counts[NAMES[k]]=r.cls[k]||0);
       fetch(M.saveBase+img.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
         .then(res=>res.json()).then(res=>{
