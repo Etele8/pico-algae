@@ -8,13 +8,20 @@ annotated preview. Everything runs locally and offline.
 from __future__ import annotations
 
 import base64
+import csv
 import json
+import os
+import re
+import string
+import time
+import uuid
 import webbrowser
 from pathlib import Path
-from threading import Timer
+from threading import Lock, Timer
 
 import cv2
-from flask import Flask, request
+import numpy as np
+from flask import Flask, jsonify, request
 
 from pico_counter import CLASS_COLORS, CLASS_NAMES, PicoCounter, load_image_rgb
 
@@ -25,22 +32,55 @@ DEFAULT_CKPT = REPO_ROOT / "runs" / "tuning" / "train" / "best_train_model.pt"
 # reveal borderline boxes below the chosen display threshold.
 PAYLOAD_FLOOR = 0.05
 
+# Where screenshots, annotated images, counts.csv and the training export are
+# written. Editable from the web UI and the capture window; persisted to config.
+OUTPUT_DIR = Path.home() / "Pico-Algae Captures"
+CONFIG_FILE = Path.home() / ".pico_capture.json"
+
+
+def cfg_load() -> dict:
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def cfg_set(key: str, value) -> None:
+    cfg = cfg_load()
+    cfg[key] = value
+    try:
+        CONFIG_FILE.write_text(json.dumps(cfg))
+    except Exception as e:  # noqa: BLE001
+        print("[pico] could not save config:", e)
+
+
+# Restore a previously chosen output folder (from the web UI or capture window).
+_saved_dir = cfg_load().get("output_dir")
+if _saved_dir:
+    OUTPUT_DIR = Path(_saved_dir)
+
+# Ordered in-memory list of screen captures for the current session.
+_captures: list = []
+_captures_lock = Lock()
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024  # 512 MB total upload
 
 _counter: PicoCounter | None = None
+_counter_lock = Lock()
 
 
 def get_counter() -> PicoCounter:
     global _counter
-    if _counter is None:
-        print(f"[pico] Loading model: {DEFAULT_CKPT} ...")
-        _counter = PicoCounter(DEFAULT_CKPT)
-        print(
-            f"[pico] Model ready on {_counter.device_label}. "
-            f"score_thresh={_counter.score_thresh} "
-            f"counting classes={[CLASS_NAMES[c] for c in _counter.classes_to_count]}"
-        )
+    with _counter_lock:
+        if _counter is None:
+            print(f"[pico] Loading model: {DEFAULT_CKPT} ...")
+            _counter = PicoCounter(DEFAULT_CKPT)
+            print(
+                f"[pico] Model ready on {_counter.device_label}. "
+                f"score_thresh={_counter.score_thresh} "
+                f"counting classes={[CLASS_NAMES[c] for c in _counter.classes_to_count]}"
+            )
     return _counter
 
 
@@ -118,14 +158,71 @@ def device_badge(counter: PicoCounter) -> str:
     )
 
 
+UPLOAD_JS = r"""
+  const drop=document.getElementById('drop'), file=document.getElementById('file'),
+        dir=document.getElementById('dir'), list=document.getElementById('filelist'),
+        go=document.getElementById('go'), form=document.getElementById('f'),
+        spin=document.getElementById('spin');
+  const picked=new Map();   // name -> File, accumulates across drops/selections
+  const IMG_RE=/\.(png|jpe?g|tiff?|bmp|webp)$/i;
+  const esc=s=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+  function addFiles(files){
+    for(const f of files){
+      if(f && ((f.type && f.type.startsWith('image/')) || IMG_RE.test(f.name||''))) picked.set(f.name, f);
+    }
+    sync();
+  }
+  function sync(){
+    const dt=new DataTransfer(); picked.forEach(f=>dt.items.add(f)); file.files=dt.files;
+    const n=picked.size; go.disabled=n===0;
+    const names=[...picked.keys()].sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase()));
+    list.innerHTML = n ? (n+' file'+(n>1?'s':'')+' selected &nbsp;<a href="#" id="clr">clear</a>'+
+      '<div class="note" style="margin-top:4px">'+names.map(esc).join(', ')+'</div>') : '';
+    const clr=document.getElementById('clr');
+    if(clr) clr.onclick=e=>{ e.preventDefault(); picked.clear(); sync(); };
+  }
+  function readEntry(entry, out){
+    return new Promise(res=>{
+      if(entry.isFile){ entry.file(f=>{ out.push(f); res(); }, ()=>res()); }
+      else if(entry.isDirectory){
+        const rd=entry.createReader(), all=[];
+        const batch=()=>rd.readEntries(ents=>{
+          if(!ents.length){ Promise.all(all.map(e=>readEntry(e,out))).then(res); }
+          else { all.push(...ents); batch(); }
+        }, ()=>res());
+        batch();
+      } else res();
+    });
+  }
+  async function handleDrop(ev){
+    const items=ev.dataTransfer.items, entries=[];
+    if(items && items.length && items[0].webkitGetAsEntry){
+      for(const it of items){ const en=it.webkitGetAsEntry(); if(en) entries.push(en); }
+      const out=[]; await Promise.all(entries.map(e=>readEntry(e,out))); addFiles(out);
+    } else { addFiles(ev.dataTransfer.files); }
+  }
+
+  drop.addEventListener('click', e=>{ if(e.target.id!=='clr' && e.target.id!=='pickdir') file.click(); });
+  file.addEventListener('change', ()=>addFiles(file.files));
+  dir.addEventListener('change', ()=>addFiles(dir.files));
+  ['dragenter','dragover'].forEach(e=>drop.addEventListener(e, ev=>{ ev.preventDefault(); drop.classList.add('hover'); }));
+  ['dragleave','drop'].forEach(e=>drop.addEventListener(e, ev=>{ ev.preventDefault(); drop.classList.remove('hover'); }));
+  drop.addEventListener('drop', handleDrop);
+  form.addEventListener('submit', ()=>{ go.disabled=true; spin.style.display='block'; });
+"""
+
+
 def upload_page(counter: PicoCounter) -> str:
     thr = counter.score_thresh
-    return PAGE_HEAD + device_badge(counter) + f"""
+    form_html = f"""
 <form id="f" class="card" action="/analyze" method="post" enctype="multipart/form-data">
   <div id="drop" class="drop">
-    <p style="font-size:1.05rem;margin:0 0 6px">Drop images here or <strong>click to browse</strong></p>
-    <p class="note" style="margin:0">PNG / JPG / TIFF microscopy images. You can select many at once.</p>
+    <p style="font-size:1.05rem;margin:0 0 6px">Drop images (or a folder) here, or <strong>click to browse</strong></p>
+    <p class="note" style="margin:0">PNG / JPG / TIFF microscopy images. Drop as many as you like, one or many
+      at a time — they add up. <a href="#" id="pickdir" onclick="document.getElementById('dir').click();return false;">choose a folder</a></p>
     <input id="file" type="file" name="images" accept="image/*" multiple hidden>
+    <input id="dir" type="file" webkitdirectory hidden>
     <div id="filelist" class="files"></div>
   </div>
   <div class="row" style="margin-top:18px">
@@ -136,29 +233,9 @@ def upload_page(counter: PicoCounter) -> str:
     <button id="go" type="submit" disabled>Analyze</button>
   </div>
   <div id="spin" class="spinner">Analyzing… this can take a couple of seconds per image.</div>
-</form>
-<script>
-  const drop = document.getElementById('drop');
-  const file = document.getElementById('file');
-  const list = document.getElementById('filelist');
-  const go = document.getElementById('go');
-  const form = document.getElementById('f');
-  const spin = document.getElementById('spin');
-  function refresh() {{
-    const n = file.files.length;
-    go.disabled = n === 0;
-    list.textContent = n ? (n + ' file' + (n>1?'s':'') + ' selected') : '';
-  }}
-  drop.addEventListener('click', () => file.click());
-  file.addEventListener('change', refresh);
-  ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {{
-    ev.preventDefault(); drop.classList.add('hover'); }}));
-  ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {{
-    ev.preventDefault(); drop.classList.remove('hover'); }}));
-  drop.addEventListener('drop', ev => {{ file.files = ev.dataTransfer.files; refresh(); }});
-  form.addEventListener('submit', () => {{ go.disabled = true; spin.style.display = 'block'; }});
-</script>
-""" + PAGE_FOOT
+</form>"""
+    return (PAGE_HEAD + device_badge(counter) + form_html
+            + f"<script>{UPLOAD_JS}</script>" + PAGE_FOOT)
 
 
 def _img_data_uri(rgb) -> str:
@@ -184,35 +261,333 @@ def analyze():
     thr = min(max(thr, PAYLOAD_FLOOR), 0.95)
 
     files = request.files.getlist("images")
-
-    images = []       # per-image payload dicts for the browser editor
-    skipped = []      # (name, reason)
+    blobs = {}  # stem -> (original filename, bytes)
     for f in files:
         name = f.filename or "unnamed"
-        stem = Path(name).stem
-        if stem.lower().endswith("_red"):
-            skipped.append((name, "paired fluorescence image — not the model input"))
+        blobs[Path(name).stem] = (name, f.read())
+    stems = sorted(blobs, key=str.lower)  # alphabetical order
+
+    consumed = set()  # stems attached as a red pair -> not shown as their own tile
+    pairs = {}        # base stem -> red stem
+    for stem in stems:
+        if stem in consumed:
+            continue
+        alt = _red_pair_of(stem, blobs)
+        if alt and alt not in consumed and alt != stem:
+            pairs[stem] = alt
+            consumed.add(alt)
+
+    images = []
+    skipped = []
+    for stem in stems:
+        if stem in consumed:
+            continue
+        name, raw = blobs[stem]
+        if stem.lower().endswith("_red"):  # fluorescence with no paired _og
+            skipped.append((name, "fluorescence image — no paired _og image found"))
             continue
         try:
-            rgb = load_image_rgb(f.read())
+            rgb = load_image_rgb(raw)
             pred = counter.predict(rgb, score_thresh=PAYLOAD_FLOOR)
-        except Exception as exc:  # noqa: BLE001 - surface any decode/inference error per file
+        except Exception as exc:  # noqa: BLE001 - surface decode/inference errors per file
             skipped.append((name, str(exc)))
             continue
         dets = [
             {"x1": b[0], "y1": b[1], "x2": b[2], "y2": b[3], "c": lab, "s": sc}
             for b, lab, sc in zip(pred.boxes, pred.labels, pred.scores)
         ]
-        images.append(
-            {"name": name, "src": _img_data_uri(pred.image_rgb),
-             "w": pred.width, "h": pred.height, "dets": dets}
-        )
+        img = {"name": name, "src": _img_data_uri(pred.image_rgb),
+               "w": pred.width, "h": pred.height, "dets": dets}
+        alt = pairs.get(stem)
+        if alt:
+            try:
+                alt_rgb = cv2.resize(load_image_rgb(blobs[alt][1]), (pred.width, pred.height),
+                                     interpolation=cv2.INTER_AREA)
+                img["alt"] = {"name": blobs[alt][0], "src": _img_data_uri(alt_rgb)}
+            except Exception:  # noqa: BLE001 - a bad red pair shouldn't drop the base image
+                pass
+        images.append(img)
 
     return render_results(images, skipped, thr, counter)
 
 
-def render_results(images, skipped, thr, counter) -> str:
-    if not images:
+def _red_pair_of(stem: str, blobs: dict):
+    """The paired 'red' image for a base stem: '<x>_og'->'<x>_red', or '...N'->'...N+1'."""
+    low = {s.lower(): s for s in blobs}
+    if stem.lower().endswith("_og"):
+        cand = (stem[:-3] + "_red").lower()
+        if cand in low:
+            return low[cand]
+    m = re.search(r"^(.*?)(\d+)$", stem)  # trailing number +1 (e.g. image_3012 -> image_3013)
+    if m:
+        prefix, num = m.group(1), m.group(2)
+        nxt = (prefix + str(int(num) + 1).zfill(len(num))).lower()
+        if nxt in low:
+            return low[nxt]
+    return None
+
+
+# --------------------------------------------------------------------------
+# Screen-capture workflow: grab -> predict -> review in the browser -> save.
+# add_capture() is called in-process by the capture control (capture_app.py).
+# --------------------------------------------------------------------------
+
+def _auto_crop(rgb: np.ndarray) -> np.ndarray:
+    """Trim flat dark/gray borders left when a capture region overshoots the image.
+
+    Keys on uniformity (a solid window-chrome border has near-zero variance,
+    while even dark microscopy has texture) and only trims a limited margin per
+    side, so it removes overshoot without eating into image content.
+    """
+    if rgb.ndim != 3:
+        return rgb
+    g = rgb.mean(axis=2)
+    h, w = g.shape
+
+    def flat_dark(line) -> bool:  # uniform + fairly dark -> window chrome
+        return float(line.std()) < 4.0 and float(line.mean()) < 55.0
+
+    max_v, max_h = int(h * 0.20), int(w * 0.20)  # never trim more than 20% off a side
+    top, bot, left, right = 0, h, 0, w
+    while top < max_v and flat_dark(g[top]):
+        top += 1
+    while bot > h - max_v and flat_dark(g[bot - 1]):
+        bot -= 1
+    while left < max_h and flat_dark(g[:, left]):
+        left += 1
+    while right > w - max_h and flat_dark(g[:, right - 1]):
+        right -= 1
+    if bot - top < h * 0.5 or right - left < w * 0.5:
+        return rgb  # safety
+    return np.ascontiguousarray(rgb[top:bot, left:right])
+
+
+def add_capture(rgb_native: np.ndarray) -> str:
+    """Detect on a screenshot and append it to the review session. Returns its id."""
+    rgb_native = _auto_crop(rgb_native)
+    counter = get_counter()
+    pred = counter.predict(rgb_native)
+    h, w = rgb_native.shape[:2]
+    sx, sy = w / pred.width, h / pred.height  # boxes are in the model's resized space
+    dets = [
+        {"x1": round(b[0] * sx, 1), "y1": round(b[1] * sy, 1),
+         "x2": round(b[2] * sx, 1), "y2": round(b[3] * sy, 1), "c": lab, "s": sc}
+        for b, lab, sc in zip(pred.boxes, pred.labels, pred.scores)
+    ]
+    ts = time.strftime("%Y-%m-%d_%H-%M-%S")
+    rid = f"{ts}_{uuid.uuid4().hex[:4]}"
+    image = {"id": rid, "name": f"capture_{ts}", "src": _img_data_uri(rgb_native),
+             "w": int(w), "h": int(h), "dets": dets}
+    with _captures_lock:
+        _captures.append({"id": rid, "ts": ts, "rgb": rgb_native, "image": image, "saved": False})
+    return rid
+
+
+@app.get("/captures")
+def captures_page():
+    counter = get_counter()
+    with _captures_lock:
+        imgs = [c["image"] for c in _captures]
+    return render_results(imgs, [], counter.score_thresh, counter, mode="capture")
+
+
+@app.get("/captures/since/<int:n>")
+def captures_since(n):
+    with _captures_lock:
+        imgs = [c["image"] for c in _captures[n:]]
+        total = len(_captures)
+    return jsonify(images=imgs, total=total)
+
+
+@app.post("/set_output_dir")
+def set_output_dir():
+    """Set (and remember) the folder where server-side outputs are written."""
+    global OUTPUT_DIR
+    data = request.get_json(force=True, silent=True) or {}
+    raw = (data.get("path") or "").strip().strip('"')
+    if not raw:
+        return jsonify(ok=False, error="empty path"), 400
+    try:
+        path = Path(raw).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:  # noqa: BLE001
+        return jsonify(ok=False, error=str(e)), 400
+    OUTPUT_DIR = path
+    cfg_set("output_dir", str(path))
+    return jsonify(ok=True, folder=str(path))
+
+
+@app.get("/list_dir")
+def list_dir():
+    """Browse the local filesystem (folders only) so the UI can pick a save folder."""
+    raw = request.args.get("path", "")
+    if not raw:  # top level: available drives + home shortcut
+        drives = [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+        if not drives:
+            drives = ["/"]
+        return jsonify(path="", parent=None, isRoot=True, home=str(Path.home()),
+                       dirs=[{"name": d, "path": d} for d in drives])
+    try:
+        p = Path(raw).expanduser()
+        dirs = []
+        for child in sorted(p.iterdir(), key=lambda x: x.name.lower()):
+            try:
+                if child.is_dir() and not child.name.startswith("."):
+                    dirs.append({"name": child.name, "path": str(child)})
+            except OSError:
+                pass
+        parent = str(p.parent) if p.parent != p else None
+        return jsonify(path=str(p), parent=parent, isRoot=False, home=str(Path.home()), dirs=dirs)
+    except Exception as e:  # noqa: BLE001
+        return jsonify(ok=False, error=str(e)), 400
+
+
+@app.post("/save_csv")
+def save_csv():
+    """Write the summary counts CSV to the chosen output folder."""
+    data = request.get_json(force=True, silent=True) or {}
+    text = data.get("csv", "")
+    if not text.strip():
+        return jsonify(ok=False, error="empty csv"), 400
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    name = _sanitize_name(data.get("filename") or "pico_counts") + ".csv"
+    path = _unique_path(OUTPUT_DIR / name)
+    path.write_text(text, encoding="utf-8")
+    return jsonify(ok=True, folder=str(OUTPUT_DIR), file=path.name)
+
+
+@app.post("/save/<rid>")
+def save_capture(rid):
+    with _captures_lock:
+        rec = next((c for c in _captures if c["id"] == rid), None)
+    if rec is None:
+        return jsonify(ok=False, error="capture not found"), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    base = _sanitize_name(data.get("name") or rec["image"]["name"])
+    stem = f"{base}_{_next_serial(OUTPUT_DIR, base)}"
+
+    written = []
+    if data.get("saveRaw", True):
+        p = _unique_path(OUTPUT_DIR / f"{stem}_raw.png")
+        cv2.imwrite(str(p), cv2.cvtColor(rec["rgb"], cv2.COLOR_RGB2BGR))
+        written.append(p.name)
+    ann = data.get("annotated_png", "")
+    if data.get("saveAnnotated", True) and "," in ann:
+        p = _unique_path(OUTPUT_DIR / f"{stem}_annotated.png")
+        p.write_bytes(base64.b64decode(ann.split(",", 1)[1]))
+        written.append(p.name)
+
+    _append_counts_csv(OUTPUT_DIR / "counts.csv", rec["ts"], stem, data)
+    with _captures_lock:
+        rec["saved"] = True
+    return jsonify(ok=True, folder=str(OUTPUT_DIR), files=written, stem=stem)
+
+
+@app.post("/export_labels")
+def export_labels():
+    """Write reviewed images + boxes as training data: images_og/, images_red/,
+    labels/ (raw-id x1 y1 x2 y2, absolute px) and an index.csv for both the og
+    and 6-channel trainers."""
+    data = request.get_json(force=True, silent=True) or {}
+    items = data.get("items") or []
+    if not items:
+        return jsonify(ok=False, error="nothing to export"), 400
+
+    root = OUTPUT_DIR / "training_export"
+    og_dir, lbl_dir, red_dir = root / "images_og", root / "labels", root / "images_red"
+    og_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
+
+    rows, n_red = [], 0
+    for it in items:
+        og = _decode_datauri(it.get("og_png", ""))
+        if og is None:
+            continue
+        stem = _unique_export_stem(root, _sanitize_name(it.get("name") or "image"))
+        og_path = og_dir / f"{stem}.png"
+        cv2.imwrite(str(og_path), og)
+        red_path = ""
+        red = _decode_datauri(it.get("red_png", "")) if it.get("red_png") else None
+        if red is not None:
+            red_dir.mkdir(parents=True, exist_ok=True)
+            rp = red_dir / f"{stem}.png"
+            cv2.imwrite(str(rp), red)
+            red_path = str(rp)
+            n_red += 1
+        (lbl_dir / f"{stem}.txt").write_text((it.get("label") or "").strip() + "\n", encoding="utf-8")
+        rows.append([stem, str(og_path), red_path, str(lbl_dir / f"{stem}.txt")])
+
+    idx = root / "index.csv"
+    new = not idx.exists()
+    with open(idx, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["stem", "og_webp", "red_webp", "label_path"])
+        w.writerows(rows)
+
+    return jsonify(ok=True, folder=str(root), count=len(rows), withRed=n_red)
+
+
+def _decode_datauri(datauri: str):
+    if not datauri or "," not in datauri:
+        return None
+    raw = base64.b64decode(datauri.split(",", 1)[1])
+    return cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+
+
+def _unique_export_stem(root: Path, base: str) -> str:
+    stem, i = base, 2
+    while (root / "labels" / f"{stem}.txt").exists() or (root / "images_og" / f"{stem}.png").exists():
+        stem, i = f"{base}_{i}", i + 1
+    return stem
+
+
+def _sanitize_name(name: str) -> str:
+    name = re.sub(r"\.[^.]+$", "", str(name)).strip()          # drop any extension
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")    # filesystem-safe
+    return name or "capture"
+
+
+def _next_serial(folder: Path, base: str) -> int:
+    n = 1
+    for f in Path(folder).glob(f"{base}_*"):
+        m = re.match(re.escape(base) + r"_(\d+)", f.stem)
+        if m:
+            n = max(n, int(m.group(1)) + 1)
+    return n
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem, suffix, i = path.stem, path.suffix, 2
+    while True:
+        cand = path.with_name(f"{stem}_{i}{suffix}")
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def _append_counts_csv(path: Path, ts: str, name: str, data: dict) -> None:
+    names = [CLASS_NAMES[c] for c in get_counter().classes_to_count if c in CLASS_NAMES]
+    counts = data.get("counts", {}) or {}
+    is_new = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow(["timestamp", "name"] + names + ["total", "colonies", "unassigned"])
+        w.writerow(
+            [ts, name]
+            + [counts.get(n, 0) for n in names]
+            + [data.get("total", 0), data.get("colonies", 0), data.get("unassigned", 0)]
+        )
+
+
+def render_results(images, skipped, thr, counter, mode="upload") -> str:
+    if not images and mode != "capture":
         body = (
             '<div class="card"><p>No images were analyzed.</p></div>'
             + _skipped_html(skipped)
@@ -227,7 +602,13 @@ def render_results(images, skipped, thr, counter) -> str:
         "classColors": {str(k): f"rgb({r},{g},{b})" for k, (r, g, b) in CLASS_COLORS.items()},
         "thr": thr,
         "floor": PAYLOAD_FLOOR,
+        "mode": mode,
+        "outputDir": str(OUTPUT_DIR),
     }
+    if mode == "capture":
+        meta["pollUrl"] = "/captures/since/"
+        meta["saveBase"] = "/save/"
+
     payload = {
         "images": images,
         "meta": meta,
@@ -236,13 +617,17 @@ def render_results(images, skipped, thr, counter) -> str:
     # Guard against any "</script>" or "<" inside strings breaking the page.
     data_json = json.dumps(payload).replace("<", "\\u003c")
 
+    footer_link = (
+        '<a class="back" href="/">← Back to home</a>'
+        if mode == "capture"
+        else '<a class="back" href="/">← Analyze more images</a>'
+    )
     return (
         PAGE_HEAD
         + device_badge(counter)
         + RESULTS_CSS
         + '<div id="app"></div>'
-        + '<p style="text-align:center;margin:24px">'
-          '<a class="back" href="/">← Analyze more images</a></p>'
+        + f'<p style="text-align:center;margin:24px">{footer_link}</p>'
         + f"<script>window.PICO = {data_json};</script>"
         + f"<script>{RESULTS_JS}</script>"
         + PAGE_FOOT
@@ -286,8 +671,7 @@ RESULTS_CSS = """
   .mfoot { border-top:1px solid var(--line); border-bottom:0; }
   .mbar .title { font-weight:700; max-width:32vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .mstage { flex:1; overflow:hidden; background:#000; position:relative; min-height:0; }
-  #esvg { width:100%; height:100%; display:block; touch-action:none; cursor:grab; }
-  #esvg.adding { cursor:crosshair; }
+  #esvg { width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
   .clsbtn { border:1px solid var(--line); background:#0b1222; color:var(--fg); border-radius:8px;
             padding:6px 11px; font-weight:700; font-size:.85rem; cursor:pointer; display:inline-flex; gap:6px; align-items:center; }
   .clsbtn.active { outline:2px solid var(--accent); outline-offset:1px; }
@@ -295,9 +679,8 @@ RESULTS_CSS = """
           padding:6px 11px; cursor:pointer; font-size:.9rem; }
   .mbtn.on { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#04222e; border:0; font-weight:700; }
   .mbtn.danger { color:#fca5a5; }
-  #erects .det { fill:transparent; pointer-events:all; }
-  #esvg.adding #erects .det { pointer-events:none; }
-  .det.sel { fill:rgba(56,189,248,.18); }
+  #erects .det { fill:none; pointer-events:none; }   /* hit-testing is geometric (boxAt) */
+  #erects .det.sel { fill:rgba(56,189,248,.18); }
   #etemp { fill:rgba(56,189,248,.18); stroke:var(--accent); }
   .count-chip { display:inline-flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums; font-size:.9rem; }
   .help { color:var(--muted); font-size:.8rem; }
@@ -312,6 +695,29 @@ RESULTS_CSS = """
           color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px; }
   .stepbtn { border:1px solid var(--line); background:#0b1222; color:var(--fg); border-radius:8px;
           width:34px; height:34px; font-size:1.2rem; line-height:1; cursor:pointer; }
+  .nameinput { background:#0b1222; color:var(--fg); border:1px solid var(--line); border-radius:8px;
+          padding:6px 9px; font-size:.95rem; font-weight:700; min-width:140px; max-width:24vw; }
+  .clsbtn .num { display:inline-flex; width:16px; height:16px; align-items:center; justify-content:center;
+          background:#04222e; color:#7dd3fc; border-radius:4px; font-size:.72rem; font-weight:800; }
+  .chk { display:inline-flex; gap:5px; align-items:center; color:var(--muted); font-size:.82rem; cursor:pointer; }
+  .redbadge { display:inline-block; background:rgba(236,72,153,.15); border:1px solid rgba(236,72,153,.5);
+          color:#f472b6; border-radius:999px; padding:1px 9px; font-size:.72rem; font-weight:600; vertical-align:middle; }
+  .folderbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:2px 0 12px; }
+  .folderbar .nameinput { font-weight:400; font-family:ui-monospace,Consolas,monospace; font-size:.85rem; }
+  .handle { fill:#fff; stroke:#0284c7; stroke-width:1.5px; }
+  .h-nw,.h-se { cursor:nwse-resize; } .h-ne,.h-sw { cursor:nesw-resize; }
+  .h-n,.h-s { cursor:ns-resize; } .h-e,.h-w { cursor:ew-resize; }
+  .browse { position:fixed; inset:0; background:rgba(2,6,23,.6); z-index:60; display:flex; align-items:center; justify-content:center; }
+  .browse.hidden { display:none; }
+  .browse-panel { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          width:min(660px,92vw); max-height:82vh; display:flex; flex-direction:column; overflow:hidden;
+          box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .browse-head { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; }
+  .browse-path { flex:1; font-family:ui-monospace,Consolas,monospace; font-size:.85rem; color:var(--fg); word-break:break-all; }
+  .browse-list { overflow:auto; padding:6px; }
+  .browse-item { padding:8px 12px; border-radius:8px; cursor:pointer; display:flex; gap:8px; align-items:center; font-size:.92rem; }
+  .browse-item:hover { background:#0b1222; }
+  .browse-foot { padding:10px 16px; border-top:1px solid var(--line); display:flex; gap:8px; justify-content:flex-end; align-items:center; }
 </style>
 """
 
@@ -322,15 +728,20 @@ RESULTS_JS = r"""
   const NAMES = M.classNames, COLORS = M.classColors;
   const COUNTED = M.countedClasses.map(Number);
   const ALL = Object.keys(NAMES).map(Number).sort();
+  const CAPTURE = M.mode === 'capture';   // screen-capture session: save to disk + poll for new
   let uid = 1;
 
-  PICO.images.forEach(img => {
-    img.dets = img.dets.map(d => ({
+  function normImg(img){
+    img.dets = (img.dets || []).map(d => ({
       id: uid++, cls: Number(d.c), score: d.s,
-      x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2, added: (d.s === null)
+      x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2, added: (d.s === null),
+      colClass: d.colClass, colCount: d.colCount
     }));
-    img.thr = M.thr;
-  });
+    if(img.thr == null) img.thr = M.thr;
+    img.showAlt = false;              // showing the paired red image?
+    return img;
+  }
+  PICO.images.forEach(normImg);
 
   const esc = s => String(s).replace(/[&<>"']/g,
     m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -398,20 +809,36 @@ RESULTS_JS = r"""
       ? `<div class="warn">⚠ ${reviewTot} colon${reviewTot===1?'y':'ies'} still ${reviewTot===1?'needs':'need'} a count &mdash; open the image and assign each flagged (?) cluster.</div>`
       : '';
 
-    let html = `
-    <div class="card">
-      <div class="toolbar">
-        <h2 style="margin:0">Results &mdash; ${PICO.images.length} image${PICO.images.length!==1?'s':''}</h2>
-        <button class="mbtn on" id="csvBtn">⬇ Download CSV</button>
-      </div>
-      <p class="note">Click any image to enlarge, inspect and correct. Counts and the CSV update automatically.</p>
-      <div class="legend" style="margin:6px 0 12px">${legend}</div>
-      ${warn}
+    const n = PICO.images.length;
+    const intro = CAPTURE
+      ? 'New screenshots appear here automatically. Click one to inspect and correct, then <b>Save to disk</b>.'
+      : 'Click any image to enlarge, inspect and correct. Counts and the CSV update automatically.';
+    const tableHtml = n ? `
       <table>
         <thead><tr><th>Image</th>${head}<th class="num">Colonies</th><th class="num">Total</th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr><td><strong>All images</strong></td>${foot}<td class="num">${colTot}</td><td class="num total">${grand}</td></tr></tfoot>
-      </table>
+      </table>` : '<p class="note">Waiting for the first capture… take a screenshot from the Pico Capture window.</p>';
+
+    let html = `
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">${CAPTURE ? 'Captures' : 'Results'} &mdash; ${n} image${n!==1?'s':''}</h2>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">
+          ${n ? '<button class="mbtn" id="expBtn" title="save the corrected images + boxes as training data">⬇ Export for training</button>' : ''}
+          ${n ? '<button class="mbtn on" id="csvBtn">⬇ Save counts CSV</button>' : ''}
+        </span>
+      </div>
+      <p class="note">${intro}</p>
+      <div class="legend" style="margin:6px 0 10px">${legend}</div>
+      <div class="folderbar">
+        <span class="help">📁 Save folder (screenshots, counts.csv, training export):</span>
+        <input class="nameinput" id="outdir" style="flex:1;min-width:240px;max-width:none" value="${esc(M.outputDir||'')}">
+        <button class="mbtn" id="browsedir">📂 Browse…</button>
+        <button class="mbtn" id="setdir">Set</button>
+      </div>
+      ${warn}
+      ${tableHtml}
     </div>`;
 
     let cards='';
@@ -421,9 +848,10 @@ RESULTS_JS = r"""
         + `<span class="pill total">Total: ${total(img)}</span>`
         + (r.colonies?`<span class="pill"><span class="dot" style="background:${COLORS[4]}"></span> colonies: <strong>${r.colonies}</strong></span>`:'')
         + (r.needReview?`<span class="pill" style="color:#fbbf24">⚠ ${r.needReview} to count</span>`:'');
+      const redBadge = img.alt ? ` <span class="redbadge">⇄ red (q)</span>` : '';
       cards += `
       <div class="imgcard">
-        <h3>${esc(img.name)}</h3>
+        <h3>${esc(img.name)}${redBadge}</h3>
         <div class="frame" data-i="${i}">
           <img src="${img.src}" alt="">
           <svg viewBox="0 0 ${img.w} ${img.h}" preserveAspectRatio="none">${rectsSvg(img)}</svg>
@@ -436,7 +864,17 @@ RESULTS_JS = r"""
     html += renderSkipped();
     app.innerHTML = html;
 
-    document.getElementById('csvBtn').onclick = downloadCSV;
+    const csvBtn = document.getElementById('csvBtn');
+    if(csvBtn) csvBtn.onclick = saveCsv;
+    const expBtn = document.getElementById('expBtn');
+    if(expBtn) expBtn.onclick = exportTraining;
+    const outdir=document.getElementById('outdir'), setdir=document.getElementById('setdir'),
+          browsedir=document.getElementById('browsedir');
+    if(setdir){
+      setdir.onclick=()=>applyOutputDir(outdir.value);
+      outdir.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); applyOutputDir(outdir.value); } });
+    }
+    if(browsedir) browsedir.onclick=openBrowse;
     app.querySelectorAll('.frame').forEach(f =>
       f.addEventListener('click', () => openEditor(+f.dataset.i)));
   }
@@ -451,7 +889,7 @@ RESULTS_JS = r"""
 
   // ---------- CSV (reflects live corrections) ----------
   function csvCell(v){ v=String(v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
-  function downloadCSV(){
+  function buildCsvText(){
     const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colonies','total'])];
     const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0;
     PICO.images.forEach(img=>{
@@ -460,8 +898,18 @@ RESULTS_JS = r"""
       COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonies;
     });
     rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[colTot, grand]));
-    const csv = rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
-    dl(new Blob([csv],{type:'text/csv'}), 'pico_counts.csv');
+    return rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
+  }
+  function saveCsv(){
+    if(!PICO.images.length) return;
+    const btn=document.getElementById('csvBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+    fetch('/save_csv',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({csv:buildCsvText(), filename:'pico_counts'})})
+      .then(r=>r.json()).then(res=>{
+        if(btn){ btn.disabled=false; btn.textContent='⬇ Save counts CSV'; }
+        if(res.ok) toast('✔ Saved '+res.file+' → '+res.folder, true);
+        else toast('Could not save CSV: '+(res.error||'?'), false);
+      }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='⬇ Save counts CSV'; } toast('Could not save CSV: '+e, false); });
   }
   function dl(blob, filename){
     const url=URL.createObjectURL(blob);
@@ -469,10 +917,93 @@ RESULTS_JS = r"""
     setTimeout(()=>URL.revokeObjectURL(url), 500);
   }
 
+  // ---------- output folder: set + browse the local tree ----------
+  function applyOutputDir(p){
+    p=(p||'').trim(); if(!p) return;
+    fetch('/set_output_dir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})})
+      .then(r=>r.json()).then(res=>{
+        if(res.ok){ M.outputDir=res.folder; const o=document.getElementById('outdir'); if(o) o.value=res.folder;
+          toast('✔ Saving to '+res.folder, true); }
+        else toast('Could not set folder: '+(res.error||'?'), false);
+      }).catch(e=>toast('Could not set folder: '+e, false));
+  }
+  let BR=null, brCur='';
+  function ensureBrowse(){
+    if(BR) return;
+    const m=document.createElement('div'); m.className='browse hidden';
+    m.innerHTML = `
+      <div class="browse-panel">
+        <div class="browse-head">
+          <button class="mbtn" id="brUp">↑ Up</button>
+          <span class="browse-path" id="brPath"></span>
+        </div>
+        <div class="browse-list" id="brList"></div>
+        <div class="browse-foot">
+          <span class="help" style="margin-right:auto">Pick the folder where outputs are saved.</span>
+          <button class="mbtn" id="brCancel">Cancel</button>
+          <button class="mbtn on" id="brSelect">Select this folder</button>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    BR={ m, up:m.querySelector('#brUp'), path:m.querySelector('#brPath'), list:m.querySelector('#brList'),
+         select:m.querySelector('#brSelect'), parent:null };
+    m.querySelector('#brCancel').onclick=()=>m.classList.add('hidden');
+    m.addEventListener('mousedown', e=>{ if(e.target===m) m.classList.add('hidden'); });
+    BR.up.onclick=()=>browseTo(BR.parent||'');
+    BR.select.onclick=()=>{ if(brCur){ applyOutputDir(brCur); } m.classList.add('hidden'); };
+  }
+  function openBrowse(){
+    ensureBrowse();
+    const o=document.getElementById('outdir');
+    browseTo((o && o.value.trim()) || (M.outputDir||''));
+    BR.m.classList.remove('hidden');
+  }
+  function browseTo(path){
+    fetch('/list_dir?path='+encodeURIComponent(path||''))
+      .then(r=>r.json()).then(res=>{
+        if(res && res.error){ toast('Cannot open: '+res.error, false); return; }
+        brCur = res.path||'';
+        BR.parent = res.parent;
+        BR.path.textContent = res.path || 'This PC';
+        BR.up.disabled = !res.path;
+        BR.select.disabled = !res.path;   // the drive list itself isn't selectable
+        BR.list.innerHTML = (res.dirs && res.dirs.length)
+          ? res.dirs.map(d=>`<div class="browse-item" data-path="${esc(d.path)}">📁 ${esc(d.name)}</div>`).join('')
+          : '<div class="help" style="padding:10px 12px">(no subfolders)</div>';
+        BR.list.querySelectorAll('.browse-item').forEach(it=> it.onclick=()=>browseTo(it.dataset.path));
+      }).catch(e=>toast('Cannot browse: '+e, false));
+  }
+
+  // ---------- export corrected boxes as training data (images + labels + index) ----------
+  function labelText(img){
+    return shown(img).map(d=>{
+      const raw=(d.cls|0)-1;   // EUK1->0, FE2->1, FC3->2, colony4->3
+      const x1=Math.max(0,Math.round(Math.min(d.x1,d.x2))), y1=Math.max(0,Math.round(Math.min(d.y1,d.y2)));
+      const x2=Math.min(img.w,Math.round(Math.max(d.x1,d.x2))), y2=Math.min(img.h,Math.round(Math.max(d.y1,d.y2)));
+      return raw+' '+x1+' '+y1+' '+x2+' '+y2;
+    }).join('\n');
+  }
+  function exportTraining(){
+    if(!PICO.images.length) return;
+    const btn=document.getElementById('expBtn'); if(btn){ btn.disabled=true; btn.textContent='Exporting…'; }
+    const items=PICO.images.map(img=>({ name:img.name, label:labelText(img),
+      og_png:img.src, red_png: img.alt?img.alt.src:null }));
+    fetch('/export_labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})})
+      .then(r=>r.json()).then(res=>{
+        if(btn){ btn.disabled=false; btn.textContent='⬇ Export for training'; }
+        if(res.ok) toast('✔ Exported '+res.count+' image'+(res.count!==1?'s':'')+
+          (res.withRed?(' ('+res.withRed+' with red pair)'):'')+' → '+res.folder, true);
+        else toast('Export failed: '+(res.error||'?'), false);
+      }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='⬇ Export for training'; } toast('Export failed: '+e, false); });
+  }
+
   // ---------- Editor (zoom / pan / add / delete / reclassify) ----------
   let ED=null;      // dom refs
-  let idx=0, scale=1, tx=0, ty=0, mode='inspect', activeCls=COUNTED[0]||1, selId=null;
+  let idx=0, scale=1, tx=0, ty=0, activeCls=COUNTED[0]||1;   // left=draw, right=inspect
+  let sel=new Set();                 // selected detection ids (multi-select)
   let panning=false, drawing=false, panLast=null, drawStart=null;
+  let movePress=null;                // {id, additive, moved, last, sx, sy} while dragging box(es)
+  let resizePress=null;              // {d, h} while dragging a resize handle
 
   function curImg(){ return PICO.images[idx]; }
 
@@ -480,22 +1011,25 @@ RESULTS_JS = r"""
     const m=document.createElement('div'); m.className='modal hidden'; m.id='editor';
     m.innerHTML = `
       <div class="mbar">
+        <input class="nameinput" id="ename" spellcheck="false" title="image name (editable)">
         <span class="title" id="etitle"></span>
-        <button class="mbtn" id="emInspect">✋ Inspect / Pan</button>
-        <button class="mbtn" id="emAdd">✏️ Add box</button>
+        <span class="help">left-drag = draw · right = inspect</span>
         <button class="mbtn danger" id="emDel">🗑 Delete</button>
         <span class="help">class</span><span id="eclasses"></span>
         <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
-          <button class="mbtn" id="ePrev">◀ Prev</button>
-          <button class="mbtn" id="eNext">Next ▶</button>
+          <button class="mbtn" id="eAlt" style="display:none">q ⇄ og/red</button>
+          <button class="mbtn" id="ePrev">◀</button>
+          <button class="mbtn" id="eNext">▶</button>
           <button class="mbtn" id="eFit">Fit</button>
-          <button class="mbtn on" id="eClose">✕ Done</button>
+          ${CAPTURE ? '<button class="mbtn on" id="eSave">💾 Save to disk</button>' : ''}
+          <button class="mbtn" id="eClose">✕ ${CAPTURE ? 'Close' : 'Done'}</button>
         </span>
       </div>
       <div class="mstage">
         <svg id="esvg"><g id="evp">
           <image id="eimg" x="0" y="0"></image>
           <g id="erects"></g>
+          <g id="ehandles"></g>
           <rect id="etemp" style="display:none" vector-effect="non-scaling-stroke" stroke-width="2"></rect>
         </g></svg>
         <div id="ecolony" class="colonypanel hidden">
@@ -509,7 +1043,9 @@ RESULTS_JS = r"""
       </div>
       <div class="mfoot">
         <span id="ecounts"></span>
-        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <span style="margin-left:auto;display:flex;gap:10px;align-items:center">
+          ${CAPTURE ? '<label class="chk"><input type="checkbox" id="esaveRaw" checked> screenshot</label>'
+                    + '<label class="chk"><input type="checkbox" id="esaveAnn" checked> annotated</label>' : ''}
           <span class="help">show model boxes ≥</span>
           <input type="range" id="ethr" min="${M.floor}" max="0.95" step="0.01">
           <span id="ethrval" class="help"></span>
@@ -517,22 +1053,23 @@ RESULTS_JS = r"""
         </span>
       </div>
       <div class="mbar" style="border-top:1px solid var(--line);border-bottom:0">
-        <span class="help">Wheel = zoom · drag = pan · <b>Add box</b>: drag on a cell · click a box to select ·
-          keys <b>1-${ALL.length}</b> set class · <b>Del</b> removes · <b>←/→</b> images · <b>Esc</b> closes ·
-          select a <b>colony</b> to enter its cell count &amp; class</span>
+        <span class="help"><b>left-drag = draw box</b> · <b>right-drag = pan</b> · <b>right-click box = select</b> ·
+          right-drag box = move · drag <b>handles = resize</b> · <b>Shift/Ctrl + right-click</b> = multi-select ·
+          wheel = zoom · keys <b>1-${ALL.length}</b> reclassify · <b>q</b> = og/red · <b>Del</b> removes · <b>←/→</b> images · <b>Esc</b> closes</span>
       </div>`;
     document.body.appendChild(m);
     const $=id=>m.querySelector(id);
-    ED={ m, svg:$('#esvg'), vp:$('#evp'), img:$('#eimg'), rects:$('#erects'), temp:$('#etemp'),
-         title:$('#etitle'), classes:$('#eclasses'), ecounts:$('#ecounts'),
-         thr:$('#ethr'), thrval:$('#ethrval'),
-         colony:$('#ecolony'), colcount:$('#ecolcount'), colclasses:$('#ecolclasses') };
+    ED={ m, svg:$('#esvg'), vp:$('#evp'), img:$('#eimg'), rects:$('#erects'), handles:$('#ehandles'), temp:$('#etemp'),
+         title:$('#etitle'), name:$('#ename'), classes:$('#eclasses'), ecounts:$('#ecounts'),
+         thr:$('#ethr'), thrval:$('#ethrval'), alt:$('#eAlt'),
+         colony:$('#ecolony'), colcount:$('#ecolcount'), colclasses:$('#ecolclasses'),
+         saveRaw:$('#esaveRaw'), saveAnn:$('#esaveAnn') };
 
-    ED.classes.innerHTML = ALL.map(c=>
-      `<button class="clsbtn" data-c="${c}"><span class="sw" style="background:${COLORS[c]}"></span>${esc(NAMES[c])}</button>`
+    ED.classes.innerHTML = ALL.map((c,i)=>
+      `<button class="clsbtn" data-c="${c}" title="key ${i+1}"><span class="num">${i+1}</span>`+
+      `<span class="sw" style="background:${COLORS[c]}"></span>${esc(NAMES[c])}</button>`
     ).join('');
-    ED.classes.querySelectorAll('.clsbtn').forEach(b=>
-      b.onclick=()=>setClass(+b.dataset.c));
+    ED.classes.querySelectorAll('.clsbtn').forEach(b=> b.onclick=()=>setClass(+b.dataset.c));
 
     // colony assignment panel: cell count + which counted class those cells are
     ED.colclasses.innerHTML = COUNTED.map(c=>
@@ -540,20 +1077,24 @@ RESULTS_JS = r"""
     ).join('');
     ED.colclasses.querySelectorAll('.clsbtn').forEach(b=> b.onclick=()=>setColClass(+b.dataset.cc));
     ED.colcount.addEventListener('input', ()=>setColCount(parseInt(ED.colcount.value,10)||0));
-    $('#ecolMinus').onclick=()=>{ const d=selById(selId); if(d) setColCount((d.colCount||0)-1); };
-    $('#ecolPlus').onclick =()=>{ const d=selById(selId); if(d) setColCount((d.colCount||0)+1); };
+    $('#ecolMinus').onclick=()=>{ const d=selOne(); if(d) setColCount((d.colCount||0)-1); };
+    $('#ecolPlus').onclick =()=>{ const d=selOne(); if(d) setColCount((d.colCount||0)+1); };
 
-    $('#emInspect').onclick=()=>setMode('inspect');
-    $('#emAdd').onclick=()=>setMode('add');
+    ED.name.addEventListener('input', ()=>{ curImg().name=ED.name.value; });
+    ED.name.addEventListener('change', ()=>{ const v=ED.name.value.trim(); if(v) curImg().name=v; renderApp(); });
+    ED.alt.onclick=toggleAlt;
+
     $('#emDel').onclick=deleteSel;
     $('#ePrev').onclick=()=>nav(-1);
     $('#eNext').onclick=()=>nav(1);
     $('#eFit').onclick=fit;
     $('#eClose').onclick=closeEditor;
     $('#eDlImg').onclick=saveImage;
-    ED.thr.addEventListener('input', ()=>{ curImg().thr=parseFloat(ED.thr.value); selId=null; renderStage(); renderApp(); });
+    const saveBtn=$('#eSave'); if(saveBtn) saveBtn.onclick=saveReview;
+    ED.thr.addEventListener('input', ()=>{ curImg().thr=parseFloat(ED.thr.value); sel.clear(); renderStage(); renderApp(); });
 
     ED.svg.addEventListener('mousedown', onDown);
+    ED.svg.addEventListener('contextmenu', e=>e.preventDefault());   // right-click = inspect, no menu
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     ED.svg.addEventListener('wheel', onWheel, {passive:false});
@@ -561,7 +1102,7 @@ RESULTS_JS = r"""
 
   function openEditor(i){
     if(!ED) buildEditor();
-    idx=i; selId=null; setMode('inspect'); setClass(activeCls);
+    idx=i; sel.clear(); setClass(activeCls);
     ED.m.classList.remove('hidden');
     document.addEventListener('keydown', onKey);
     loadImage();
@@ -575,33 +1116,53 @@ RESULTS_JS = r"""
   function loadImage(){
     const img=curImg();
     ED.svg.setAttribute('viewBox', `0 0 ${img.w} ${img.h}`);
-    ED.img.setAttribute('href', img.src);
     ED.img.setAttribute('width', img.w);
     ED.img.setAttribute('height', img.h);
     ED.thr.value=img.thr;
+    ED.name.value=img.name;
+    updateBg(); updateAltBtn();
     fit();               // resets scale/translate + renders
   }
+
+  function updateBg(){ const img=curImg(); ED.img.setAttribute('href', (img.showAlt && img.alt) ? img.alt.src : img.src); }
+  function updateAltBtn(){
+    const img=curImg();
+    ED.alt.style.display = img.alt ? '' : 'none';
+    ED.alt.classList.toggle('on', !!img.showAlt);
+    ED.alt.textContent = img.showAlt ? 'q ⇄ RED' : 'q ⇄ og/red';
+  }
+  function toggleAlt(){ const img=curImg(); if(!img.alt) return; img.showAlt=!img.showAlt; updateBg(); updateAltBtn(); }
 
   function fit(){ scale=1; tx=0; ty=0; applyVP(); renderStage(); }
   function applyVP(){ ED.vp.setAttribute('transform', `translate(${tx} ${ty}) scale(${scale})`); }
 
   function renderStage(){
-    const img=curImg();
-    ED.title.textContent = `${img.name}   (${idx+1}/${PICO.images.length})`;
-    ED.thrval.textContent = (+img.thr).toFixed(2);
+    ED.title.textContent = `(${idx+1}/${PICO.images.length})`;
+    ED.thrval.textContent = (+curImg().thr).toFixed(2);
     renderRects();
+    renderHandles();
     renderCounts();
     updateColonyPanel();
   }
   function renderRects(){
     const img=curImg();
     ED.rects.innerHTML = shown(img).map(d=>{
-      const sel = d.id===selId;
-      const sw = d.cls===4 ? (sel?4:3) : (sel?3:2);
-      return detRect(d, {cls:'det'+(sel?' sel':''), id:true, sw});
+      const on = sel.has(d.id);
+      const sw = d.cls===4 ? (on?5:3) : (on?4:2);
+      return detRect(d, {cls:'det'+(on?' sel':''), id:true, sw});
     }).join('');
-    ED.rects.querySelectorAll('.det').forEach(r=>
-      r.addEventListener('mousedown', e=>{ if(mode==='inspect'){ e.stopPropagation(); selId=+r.dataset.id; renderStage(); } }));
+    // box mousedown is handled in onDown via e.target so drag-to-move works
+  }
+  function renderHandles(){
+    const d = selOne();   // resize handles on the single selected box
+    if(!d){ ED.handles.innerHTML=''; return; }
+    let hs=10; try{ const a=ED.vp.getScreenCTM().a; if(a) hs=10/a; }catch(e){}
+    const x1=Math.min(d.x1,d.x2), y1=Math.min(d.y1,d.y2), x2=Math.max(d.x1,d.x2), y2=Math.max(d.y1,d.y2);
+    const cx=(x1+x2)/2, cy=(y1+y2)/2;
+    const P=[['nw',x1,y1],['n',cx,y1],['ne',x2,y1],['e',x2,cy],['se',x2,y2],['s',cx,y2],['sw',x1,y2],['w',x1,cy]];
+    ED.handles.innerHTML = P.map(([h,px,py])=>
+      `<rect class="handle h-${h}" data-h="${h}" x="${px-hs/2}" y="${py-hs/2}" width="${hs}" height="${hs}" vector-effect="non-scaling-stroke"/>`
+    ).join('');
   }
   function renderCounts(){
     const r=counts(curImg());
@@ -611,10 +1172,11 @@ RESULTS_JS = r"""
     h += ` &nbsp; <span class="count-chip"><span class="sw" style="background:${COLORS[4]}"></span>colonies: <b>${r.colonies}</b></span>`;
     if(r.needReview>0) h += ` &nbsp; <span class="count-chip" style="color:#fbbf24">⚠ ${r.needReview} unassigned</span>`;
     h += ` &nbsp; <span class="count-chip">Total: <b style="color:var(--accent2)">${total(curImg())}</b></span>`;
+    if(sel.size>1) h += ` &nbsp; <span class="count-chip" style="color:var(--accent)">${sel.size} selected</span>`;
     ED.ecounts.innerHTML = h;
   }
   function updateColonyPanel(){
-    const d=selById(selId);
+    const d=selOne();
     if(d && d.cls===4){
       ED.colony.classList.remove('hidden');
       if(document.activeElement!==ED.colcount) ED.colcount.value = d.colCount||0;
@@ -624,36 +1186,46 @@ RESULTS_JS = r"""
     }
   }
 
-  function setMode(m){
-    mode=m;
-    ED.svg.classList.toggle('adding', m==='add');
-    ED.m.querySelector('#emInspect').classList.toggle('on', m==='inspect');
-    ED.m.querySelector('#emAdd').classList.toggle('on', m==='add');
-  }
   function setClass(c){
     activeCls=c;
     ED.classes.querySelectorAll('.clsbtn').forEach(b=>b.classList.toggle('active', +b.dataset.c===c));
-    const d=selById(selId);
-    if(d && d.cls!==c){
-      d.cls=c;
-      if(c===4){ if(d.colCount==null) d.colCount=0; if(d.colClass==null) d.colClass=null; }
-      else { d.colCount=undefined; d.colClass=undefined; }
+    const ds=selDets();
+    if(ds.length){
+      ds.forEach(d=>{
+        d.cls=c;
+        if(c===4){ if(d.colCount==null) d.colCount=0; if(d.colClass==null) d.colClass=null; }
+        else { d.colCount=undefined; d.colClass=undefined; }
+      });
       renderStage(); renderApp();
     }
   }
   function setColCount(v){
-    const d=selById(selId); if(!d||d.cls!==4) return;
+    const d=selOne(); if(!d||d.cls!==4) return;
     d.colCount=Math.max(0, v|0); renderStage(); renderApp();
   }
   function setColClass(c){
-    const d=selById(selId); if(!d||d.cls!==4) return;
+    const d=selOne(); if(!d||d.cls!==4) return;
     d.colClass=c; if(!(d.colCount>0)) d.colCount=1;   // picking a class implies at least one cell
     renderStage(); renderApp();
   }
   function selById(id){ return curImg().dets.find(d=>d.id===id); }
+  function selDets(){ return curImg().dets.filter(d=>sel.has(d.id)); }
+  function selOne(){ const a=selDets(); return a.length===1 ? a[0] : null; }
+  function boxAt(p){   // topmost/smallest box under the point, incl. a small edge tolerance
+    let tol=5; try{ const a=ED.vp.getScreenCTM().a; if(a) tol=5/a; }catch(e){}
+    let best=null, bestArea=Infinity;
+    shown(curImg()).forEach(d=>{
+      const x1=Math.min(d.x1,d.x2)-tol, y1=Math.min(d.y1,d.y2)-tol,
+            x2=Math.max(d.x1,d.x2)+tol, y2=Math.max(d.y1,d.y2)+tol;
+      if(p.x>=x1 && p.x<=x2 && p.y>=y1 && p.y<=y2){
+        const a=(x2-x1)*(y2-y1); if(a<bestArea){ bestArea=a; best=d; }
+      }
+    });
+    return best;
+  }
   function deleteSel(){
-    const img=curImg(); const d=selById(selId); if(!d) return;
-    img.dets = img.dets.filter(x=>x.id!==selId); selId=null; renderStage();
+    if(!sel.size) return;
+    curImg().dets = curImg().dets.filter(d=>!sel.has(d.id)); sel.clear(); renderStage(); renderApp();
   }
 
   // coordinate helpers
@@ -663,26 +1235,69 @@ RESULTS_JS = r"""
     return p.matrixTransform(ED.svg.getScreenCTM().inverse()); }
 
   function onDown(e){
-    if(mode==='add'){
+    if(e.button===2){                              // RIGHT button = inspect (select / move / pan)
       e.preventDefault();
-      drawing=true; drawStart=toImg(e);
-      ED.temp.style.display=''; ED.temp.setAttribute('stroke', COLORS[activeCls]);
-      setTemp(drawStart.x, drawStart.y, 0, 0);
-    } else {
-      // background press -> pan (rect presses handled on the rect, they stopPropagation)
-      panning=true; panLast=toVB(e); selId=null; renderStage();
+      const additive = e.shiftKey||e.ctrlKey||e.metaKey;
+      const box = boxAt(toImg(e));                 // geometry hit-test: edges + near-edge count too
+      if(box){
+        if(!additive && !sel.has(box.id)){ sel=new Set([box.id]); }
+        movePress={id:box.id, additive, moved:false, last:toImg(e), sx:e.clientX, sy:e.clientY};
+        renderStage();
+      } else {
+        if(!additive && sel.size){ sel.clear(); renderStage(); }   // right-click empty -> deselect
+        panning=true; panLast=toVB(e);
+      }
+      return;
     }
+    if(e.button!==0) return;                       // left button below
+    const t=e.target, hAttr=(t && t.getAttribute) ? t.getAttribute('data-h') : null;
+    if(hAttr){                                     // LEFT on a resize handle = resize
+      const d=selOne(); if(d){ e.preventDefault(); resizePress={d, h:hAttr}; }
+      return;
+    }
+    const p=toImg(e);                              // LEFT elsewhere = draw a new box
+    if(p.x<0 || p.y<0 || p.x>curImg().w || p.y>curImg().h) return;   // not outside the image
+    e.preventDefault();
+    drawing=true; drawStart={x:p.x, y:p.y};
+    ED.temp.style.display=''; ED.temp.setAttribute('stroke', COLORS[activeCls]);
+    setTemp(p.x, p.y, 0, 0);
   }
   function onMove(e){
     if(drawing){
-      const p=toImg(e);
-      setTemp(Math.min(p.x,drawStart.x), Math.min(p.y,drawStart.y),
-              Math.abs(p.x-drawStart.x), Math.abs(p.y-drawStart.y));
-    } else if(panning){
-      const c=toVB(e); tx+=(c.x-panLast.x); ty+=(c.y-panLast.y); panLast=c; applyVP();
+      const p=toImg(e), cx=clamp(p.x,0,curImg().w), cy=clamp(p.y,0,curImg().h);   // stay inside image
+      setTemp(Math.min(cx,drawStart.x), Math.min(cy,drawStart.y),
+              Math.abs(cx-drawStart.x), Math.abs(cy-drawStart.y));
+      return;
     }
+    if(resizePress){
+      const p=toImg(e), d=resizePress.d, h=resizePress.h;
+      if(h.indexOf('e')>=0) d.x2=Math.max(p.x, d.x1+3);
+      if(h.indexOf('w')>=0) d.x1=Math.min(p.x, d.x2-3);
+      if(h.indexOf('n')>=0) d.y1=Math.min(p.y, d.y2-3);
+      if(h.indexOf('s')>=0) d.y2=Math.max(p.y, d.y1+3);
+      renderRects(); renderHandles();
+      return;
+    }
+    if(movePress){
+      if(!movePress.moved){
+        if(Math.hypot(e.clientX-movePress.sx, e.clientY-movePress.sy) < 4) return;  // click vs drag
+        movePress.moved=true;
+        if(movePress.additive && !sel.has(movePress.id)) sel.add(movePress.id);
+      }
+      const p=toImg(e), dx=p.x-movePress.last.x, dy=p.y-movePress.last.y; movePress.last=p;
+      curImg().dets.forEach(d=>{ if(sel.has(d.id)){ d.x1+=dx; d.y1+=dy; d.x2+=dx; d.y2+=dy; }});
+      renderRects(); renderHandles();
+      return;
+    }
+    if(panning){ const c=toVB(e); tx+=(c.x-panLast.x); ty+=(c.y-panLast.y); panLast=c; applyVP(); }
   }
   function onUp(e){
+    if(resizePress){
+      const d=resizePress.d;
+      d.x1=round(d.x1); d.y1=round(d.y1); d.x2=round(d.x2); d.y2=round(d.y2);
+      resizePress=null; renderStage(); renderApp();
+      return;
+    }
     if(drawing){
       drawing=false; ED.temp.style.display='none';
       const r=tempRect();
@@ -690,8 +1305,19 @@ RESULTS_JS = r"""
         const d={id:uid++, cls:activeCls, score:null, added:true,
                  x1:round(r.x), y1:round(r.y), x2:round(r.x+r.w), y2:round(r.y+r.h)};
         if(activeCls===4){ d.colCount=0; d.colClass=null; }   // new colony starts unassigned
-        curImg().dets.push(d); selId=d.id; renderStage(); renderApp();
+        curImg().dets.push(d); sel=new Set([d.id]); renderStage(); renderApp();
       }
+    }
+    if(movePress){
+      if(!movePress.moved){                       // it was a click, not a drag
+        const id=movePress.id;
+        if(movePress.additive){ if(sel.has(id)) sel.delete(id); else sel.add(id); }
+        else { sel=new Set([id]); }
+      } else {                                     // finished moving: snap coords
+        curImg().dets.forEach(d=>{ if(sel.has(d.id)){ d.x1=round(d.x1); d.y1=round(d.y1); d.x2=round(d.x2); d.y2=round(d.y2); }});
+        renderApp();
+      }
+      movePress=null; renderStage();
     }
     panning=false;
   }
@@ -700,6 +1326,7 @@ RESULTS_JS = r"""
     const before=toImg(e), vb=toVB(e);
     scale=clamp(scale*(e.deltaY<0?1.15:1/1.15), 0.4, 16);
     tx=vb.x-before.x*scale; ty=vb.y-before.y*scale; applyVP();
+    renderHandles();   // keep handle size constant on zoom
   }
   function round(v){ return Math.round(v*10)/10; }
   function setTemp(x,y,w,h){ ED.temp.setAttribute('x',x); ED.temp.setAttribute('y',y);
@@ -707,26 +1334,25 @@ RESULTS_JS = r"""
   function tempRect(){ return ED.temp._r || {x:0,y:0,w:0,h:0}; }
 
   function nav(delta){
+    if(PICO.images.length<2 && delta) return;
     idx=(idx+delta+PICO.images.length)%PICO.images.length;
-    selId=null; loadImage();
+    sel.clear(); loadImage();
   }
   function onKey(e){
     const typing = document.activeElement && document.activeElement.tagName==='INPUT';
     if(e.key==='Escape'){ if(typing){ document.activeElement.blur(); return; } closeEditor(); return; }
-    if(typing) return;   // don't fire shortcuts while entering a colony count
+    if(typing) return;   // don't fire shortcuts while editing the name / colony count
     if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); deleteSel(); return; }
     if(e.key==='ArrowLeft'){ nav(-1); return; }
     if(e.key==='ArrowRight'){ nav(1); return; }
-    if(e.key==='a'||e.key==='A'){ setMode('add'); return; }
-    if(e.key==='v'||e.key==='V'){ setMode('inspect'); return; }
+    if(e.key==='q'||e.key==='Q'){ toggleAlt(); return; }
     if(e.key==='f'||e.key==='F'){ fit(); return; }
     const n=parseInt(e.key,10);
     if(n>=1 && n<=ALL.length){ setClass(ALL[n-1]); }
   }
 
-  // ---------- save corrected image ----------
-  function saveImage(){
-    const img=curImg();
+  // ---------- annotated image (canvas), shared by download and disk-save ----------
+  function annotatedCanvas(img, cb){
     const cv=document.createElement('canvas'); cv.width=img.w; cv.height=img.h;
     const ctx=cv.getContext('2d'); const im=new Image();
     im.onload=()=>{
@@ -749,12 +1375,63 @@ RESULTS_JS = r"""
           ctx.strokeRect(d.x1,d.y1,d.x2-d.x1,d.y2-d.y1);
         }
       });
-      cv.toBlob(b=>dl(b, img.name.replace(/\.[^.]+$/,'')+'_checked.png'));
+      cb(cv);
     };
     im.src=img.src;
   }
+  function saveImage(){
+    const img=curImg();
+    annotatedCanvas(img, cv=>cv.toBlob(b=>dl(b, img.name.replace(/\.[^.]+$/,'')+'_checked.png')));
+  }
+
+  function toast(msg, good){
+    let t=document.getElementById('ptoast');
+    if(!t){ t=document.createElement('div'); t.id='ptoast';
+      t.style.cssText='position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:100;'+
+        'padding:12px 20px;border-radius:10px;font-weight:700;box-shadow:0 8px 28px rgba(0,0,0,.5);max-width:80vw;text-align:center';
+      document.body.appendChild(t); }
+    t.style.background=good?'#16a34a':'#b91c1c'; t.style.color='#fff'; t.textContent=msg;
+    t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>{t.style.display='none';}, 5000);
+  }
+
+  // ---------- capture session: save to disk (with options) + poll for new captures ----------
+  function saveReview(){
+    const img=curImg(), r=counts(img);
+    if(r.needReview>0 && !confirm(r.needReview+' colony/colonies still have no count. Save anyway?')) return;
+    const wantRaw = !ED.saveRaw || ED.saveRaw.checked;
+    const wantAnn = !ED.saveAnn || ED.saveAnn.checked;
+    const btn=ED.m.querySelector('#eSave'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
+    const finish = (annUri)=>{
+      const body={ name: img.name, annotated_png: annUri, saveRaw: wantRaw, saveAnnotated: wantAnn,
+                   total: total(img), colonies: r.colonies, unassigned: r.needReview, counts:{} };
+      COUNTED.forEach(k=>body.counts[NAMES[k]]=r.cls[k]||0);
+      fetch(M.saveBase+img.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+        .then(res=>res.json()).then(res=>{
+          if(btn){ btn.disabled=false; btn.textContent='💾 Save to disk'; }
+          if(res.ok) toast('✔ Saved '+((res.files&&res.files.length)?res.files.join(', '):res.stem)+' → '+res.folder, true);
+          else toast('Save failed: '+(res.error||'unknown'), false);
+        }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='💾 Save to disk'; } toast('Save failed: '+e, false); });
+    };
+    if(wantAnn) annotatedCanvas(img, cv=>finish(cv.toDataURL('image/png')));
+    else finish('');
+  }
 
   renderApp();
+  if(CAPTURE){
+    if(PICO.images.length) openEditor(PICO.images.length-1);   // open the latest capture
+    let known = PICO.images.length;
+    setInterval(()=>{
+      fetch(M.pollUrl+known).then(r=>r.json()).then(res=>{
+        if(!res || !res.images || !res.images.length) return;
+        res.images.forEach(im=>{ normImg(im); PICO.images.push(im); });
+        known = res.total;
+        const editorOpen = ED && !ED.m.classList.contains('hidden');
+        renderApp();
+        if(!editorOpen) openEditor(PICO.images.length-1);     // jump in only if not mid-edit
+        else toast('📸 New capture added — now '+PICO.images.length, true);
+      }).catch(()=>{});
+    }, 1500);
+  }
 })();
 """
 
