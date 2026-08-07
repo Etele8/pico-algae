@@ -14,13 +14,58 @@ on the local PC — no internet connection is needed once set up.
 5. When finished, close the small black window to stop the program.
 
 Notes:
-- Upload the **brightfield/overlay images** (e.g. `*_og.png`). Files ending in
-  `_red` are the paired fluorescence images and are skipped automatically —
-  the model only uses the main image.
-- You can upload many images at once.
+- **Drop images or a folder** — you can drag them in one or a few at a time and
+  they **add up** (nothing is lost), or use *choose a folder*. Images are listed
+  and analyzed in **alphabetical order**.
+- **Red pairs**: if you include both an image and its partner (either `*_og`/`*_red`,
+  or the next consecutive number, e.g. `image_3012` + `image_3013`), they're paired
+  automatically — only the base image gets a tile, and inside the editor **`q`**
+  toggles the background between the two (boxes stay put) for easy validation.
 - The **confidence threshold** (default `0.50`) controls how sure the model must
-  be before it counts a cell. Raise it for fewer, higher-confidence detections;
-  lower it if faint cells are being missed.
+  be before it counts a cell. Raise it for fewer detections; lower it for more.
+- **Save folder**: the box at the top of the results sets where server-side outputs go
+  (**Save counts CSV**, the training export, and captures). Type a path or click **📂 Browse…**
+  to pick one from the local file tree; it's remembered between runs.
+
+### In the editor (click any image)
+
+- **Left-drag = draw a box** (only inside the image). **Right-drag empty = pan**, **wheel = zoom**, **Fit** resets.
+- **Right-click a box to select** it (edges and near-edges count too); **Shift/Ctrl + right-click** for several;
+  **right-drag** a box to move it; **drag its white handles** to resize.
+- **1–4** reclassify the selection (buttons show their number); **Del** removes.
+- Select a **colony** to type how many cells it holds and their class.
+- **`q`** swaps between the og and red image. The **name** (top-left) is editable.
+
+### Export corrected boxes as training data
+
+**⬇ Export for training** (top of the results) writes every reviewed image plus
+your corrected boxes into a **`training_export`** folder inside your output folder:
+`images_og/`, `images_red/` (for paired images), `labels/` (one `.txt` per image,
+`raw_class x1 y1 x2 y2` in pixels) and an `index.csv`. That folder feeds both the
+og and the 6-channel trainers directly — so pre-labelling with the model and
+correcting here turns validation into training data. Merge it with last year's
+dataset and retrain to include new images.
+
+## Capture straight off the screen (Olympus workflow)
+
+To skip exporting files, double-click **`Capture from Olympus.bat`**. A small
+always-on-top **Pico Capture** window appears alongside the web app:
+
+1. Click **Select region** once and drag a box over the microscopy image area in
+   the Olympus software (remembered for next time). Overshoot is fine — the
+   dark/gray border is auto-cropped away.
+2. Click **📸 Capture & Review** — it screenshots that region and runs the model.
+   All captures collect in **one review tab** (no new tab per shot); a new capture
+   opens automatically unless you're mid-edit.
+3. Correct the detections, optionally rename it, then click **💾 Save to disk**.
+
+Choose where output goes with **🗂 Save folder…** (capture window) or the **Save
+folder** box at the top of the results page — it works in the upload flow too and
+is remembered between runs. Each save writes the raw screenshot and/or annotated
+image (**checkboxes** let you pick) plus a row in a running `counts.csv`, named
+`<yourname>_<serial>`. The screenshot reads the
+*displayed* image, so detection can be slightly less precise than the original
+file — the correction step covers the difference.
 
 ## One-time setup (for whoever installs it)
 
