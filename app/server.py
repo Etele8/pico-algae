@@ -1054,7 +1054,7 @@ RESULTS_JS = r"""
       <div class="mbar" style="border-top:1px solid var(--line);border-bottom:0">
         <span class="help"><b>left-drag = draw box</b> · <b>right-drag = pan</b> · <b>right-click box = select</b> ·
           right-drag box = move · drag <b>handles = resize</b> · <b>Shift/Ctrl + right-click</b> = multi-select ·
-          wheel = zoom · keys <b>1-${ALL.length}</b> reclassify · <b>q</b> = og/red · <b>Del</b> removes · <b>←/→</b> images · <b>Esc</b> closes</span>
+          wheel = zoom · keys <b>1-${ALL.length}</b> reclassify · <b>q</b> = og/red · <b>Del</b> removes · <b>←/→ or a/d</b> images · <b>Esc</b> closes</span>
       </div>`;
     document.body.appendChild(m);
     const $=id=>m.querySelector(id);
@@ -1342,8 +1342,8 @@ RESULTS_JS = r"""
     if(e.key==='Escape'){ if(typing){ document.activeElement.blur(); return; } closeEditor(); return; }
     if(typing) return;   // don't fire shortcuts while editing the name / colony count
     if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); deleteSel(); return; }
-    if(e.key==='ArrowLeft'){ nav(-1); return; }
-    if(e.key==='ArrowRight'){ nav(1); return; }
+    if(e.key==='ArrowLeft' || e.key==='a' || e.key==='A'){ nav(-1); return; }   // prev image
+    if(e.key==='ArrowRight'|| e.key==='d' || e.key==='D'){ nav(1); return; }    // next image
     if(e.key==='q'||e.key==='Q'){ toggleAlt(); return; }
     if(e.key==='f'||e.key==='F'){ fit(); return; }
     const n=parseInt(e.key,10);
