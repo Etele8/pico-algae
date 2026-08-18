@@ -26,8 +26,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Distributable bundle (large; rebuild as needed)
+# Distributable bundle + installer (large; rebuild as needed)
 Pico-Algae-Counter.zip
+Pico-Algae-Counter-Setup.exe
 
 # Per-install version stamp written by Update.bat
 app/VERSION.txt
