@@ -69,20 +69,39 @@ file — the correction step covers the difference.
 
 ## One-time setup (for whoever installs it)
 
-Works with **Python 3.10–3.14** (3.13 recommended — it has a normal Windows
-installer at [python.org](https://www.python.org/downloads/); tick *"Add
-python.exe to PATH"*). The easiest way is to **double-click `Install.bat`** —
-it finds an installed Python automatically and asks you to choose CPU or GPU:
+**Easiest — the Setup.exe wizard.** Run `Pico-Algae-Counter-Setup.exe` and click
+through the normal install wizard (it installs per-user, so no admin rights are
+needed and it avoids the write-protected `C:\Program Files`). It creates Start
+Menu and Desktop shortcuts and an entry in *Add or remove programs*. Everything
+below happens automatically during the wizard.
 
-- **CPU only** — works on any PC, no graphics card needed.
-- **NVIDIA GPU (CUDA)** — a few times faster, if the PC has an NVIDIA card.
-  Pick the CUDA version that matches the installed NVIDIA driver (12.6 is a safe
-  default; 12.8 / 13.0 for newer drivers).
+**Or the zip** — double-click **`Install.bat`**. Either way the setup:
 
-The app then uses the GPU automatically whenever a GPU build is installed and a
-card is present — otherwise it falls back to CPU. The badge on the web page and
-the console line show which one is active. To force a device, set the
-`PICO_DEVICE` environment variable to `cpu` or `cuda`.
+- **installs Python for you** if none is present (downloads the official
+  Python 3.13 and adds it to PATH). Python 3.10–3.14 all work.
+- **auto-detects the hardware** — it reads the NVIDIA driver via `nvidia-smi`
+  and installs the matching CUDA build of PyTorch (cu126 / cu128 / cu130), or
+  the CPU build if there's no NVIDIA card. Nobody has to know their CUDA version.
+
+The detection logic lives in [`tools/detect_cuda.py`](../tools/detect_cuda.py) and
+the whole flow in [`tools/setup_env.ps1`](../tools/setup_env.ps1); re-running
+`Install.bat` (or *Repair setup* in the Start Menu) repeats it safely. The badge
+on the web page and the console line show whether CPU or GPU is active. To force
+a device, set the `PICO_DEVICE` environment variable to `cpu` or `cuda`.
+
+### Building the installer (for the maintainer)
+
+Needs [Inno Setup 6](https://jrsoftware.org/isdl.php)
+(`winget install JRSoftware.InnoSetup`). From the repo root, after pushing your
+changes to GitHub `main`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1
+```
+
+It stamps `app/VERSION.txt` from the current commit (the baseline for the update
+check — so build from a **pushed** commit) and compiles
+[`installer/pico.iss`](../installer/pico.iss) into `Pico-Algae-Counter-Setup.exe`.
 
 ### Manual install (equivalent to Install.bat)
 
@@ -101,9 +120,12 @@ The launcher uses `.venv\Scripts\python.exe` directly.
 ## Updating (remote, no reinstall)
 
 To ship a new version to everyone: commit and push the code to
-`https://github.com/Etele8/pico-algae` (main). On each colleague's PC they
-double-click **`Update.bat`** — it downloads the latest code from GitHub and
-overwrites only the program files. It **does not** touch the `.venv`, the model
+`https://github.com/Etele8/pico-algae` (main). On each colleague's PC, the web
+page then shows a green **"A new version is available"** bar with an **Update
+now** button (it checks GitHub via `/check_update` on load and compares the
+pushed commit against `app/VERSION.txt`). Clicking it launches `Update.bat`;
+they can also double-click **`Update.bat`** directly. It downloads the latest
+code from GitHub and overwrites only the program files. It **does not** touch the `.venv`, the model
 (`runs/…`), saved captures, or the user's settings, so updates are small and
 fast even though the model is large. Any new Python packages in
 `requirements.txt` are installed automatically (PyTorch is left as-is).
@@ -128,8 +150,10 @@ To serve a different checkpoint, change `DEFAULT_CKPT` near the top of
 
 ## Files
 
-- `Install.bat` — interactive installer (choose CPU or GPU).
+- `Pico-Algae-Counter-Setup.exe` — the wizard installer (built from `installer/`).
+- `Install.bat` — auto installer (installs Python + auto-detects CPU/GPU).
 - `Update.bat` — pulls the latest code from GitHub (keeps model/venv/data).
+- `tools/detect_cuda.py`, `tools/setup_env.ps1` — auto Python + CUDA setup.
 - `Start Pico-Algae Counter.bat` — double-click launcher.
 - `app/server.py` — the Flask web app (UI + routes).
 - `app/pico_counter.py` — offline model loading, device selection, inference.

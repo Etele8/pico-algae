@@ -84,6 +84,23 @@ def get_counter() -> PicoCounter:
     return _counter
 
 
+# --- Remote update check --------------------------------------------------
+# The app is delivered as a small public GitHub repo; Update.bat pulls the
+# latest code. The web UI checks here whether a newer commit exists and offers
+# a one-click update. The installed commit is stamped in app/VERSION.txt (by the
+# packager and by Update.bat).
+REPO_COMMITS_API = "https://api.github.com/repos/Etele8/pico-algae/commits/main"
+_VERSION_FILE = Path(__file__).with_name("VERSION.txt")
+_update_cache = {"t": 0.0, "data": None}
+
+
+def installed_commit() -> str | None:
+    try:
+        return _VERSION_FILE.read_text(encoding="utf-8", errors="ignore").split()[0][:7]
+    except Exception:
+        return None
+
+
 PAGE_HEAD = """
 <!doctype html>
 <html lang="en">
@@ -138,6 +155,13 @@ PAGE_HEAD = """
 </style>
 </head>
 <body>
+<div id="updbar" style="display:none;align-items:center;gap:12px;justify-content:center;
+     padding:9px 16px;background:#134e2b;border-bottom:1px solid #16643a;color:#dcfce7;font-size:.92rem">
+  <span id="updmsg">A new version is available.</span>
+  <button id="updbtn" type="button" style="background:#22c55e;color:#052e16;border:0;border-radius:7px;
+     padding:5px 12px;font-weight:700;cursor:pointer">Update now</button>
+  <a href="#" id="updx" style="color:#a7f3d0;text-decoration:none">dismiss</a>
+</div>
 <header>
   <h1>🦠 Pico-Algae Counter</h1>
   <p>Upload microscopy images &mdash; count cells, then click any result to inspect &amp; correct.</p>
@@ -145,7 +169,33 @@ PAGE_HEAD = """
 <main>
 """
 
-PAGE_FOOT = "</main></body></html>"
+UPDATE_JS = r"""
+(function(){
+  var bar=document.getElementById('updbar'); if(!bar) return;
+  fetch('/check_update').then(r=>r.json()).then(function(d){
+    if(d && d.update){
+      document.getElementById('updmsg').textContent='A new version is available'+
+        (d.latest_date?(' ('+d.latest_date+')'):'')+'.';
+      bar.style.display='flex';
+    }
+  }).catch(function(){});
+  var b=document.getElementById('updbtn');
+  if(b) b.onclick=function(){
+    b.disabled=true; b.textContent='Updating…';
+    fetch('/do_update',{method:'POST'}).then(r=>r.json()).then(function(d){
+      document.getElementById('updmsg').textContent = d.ok
+        ? 'Updating in the new window. When it says "Update complete", close this browser tab and the black window, then start the program again.'
+        : ('Could not start the update: '+(d.error||'unknown')+'. You can run Update.bat in the program folder instead.');
+      if(d.ok) b.style.display='none';
+    }).catch(function(){
+      document.getElementById('updmsg').textContent='Could not start the update. Run Update.bat in the program folder instead.';
+    });
+  };
+  var x=document.getElementById('updx'); if(x) x.onclick=function(e){e.preventDefault(); bar.style.display='none';};
+})();
+"""
+
+PAGE_FOOT = f"<script>{UPDATE_JS}</script></main></body></html>"
 
 
 def device_badge(counter: PicoCounter) -> str:
@@ -248,6 +298,52 @@ def _img_data_uri(rgb) -> str:
 @app.get("/")
 def index():
     return upload_page(get_counter())
+
+
+@app.get("/check_update")
+def check_update():
+    import urllib.request
+
+    now = time.time()
+    if _update_cache["data"] and now - _update_cache["t"] < 300:
+        return jsonify(_update_cache["data"])
+
+    cur = installed_commit()
+    data = {"update": False, "current": cur, "latest": None, "latest_date": None}
+    try:
+        req = urllib.request.Request(
+            REPO_COMMITS_API,
+            headers={"User-Agent": "pico-updater", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=6) as r:
+            j = json.loads(r.read().decode("utf-8"))
+        latest = (j.get("sha") or "")[:7]
+        date = (j.get("commit", {}).get("author", {}).get("date") or "")[:10]
+        data["latest"] = latest
+        data["latest_date"] = date
+        # Only prompt when we know our installed commit and it differs, so a
+        # fresh install (no VERSION.txt yet) never nags with a false positive.
+        if latest and cur and latest != cur:
+            data["update"] = True
+    except Exception as e:  # noqa: BLE001 - offline / rate-limited: just don't prompt
+        data["error"] = str(e)
+    _update_cache.update(t=now, data=data)
+    return jsonify(data)
+
+
+@app.post("/do_update")
+def do_update():
+    import subprocess
+
+    upd = REPO_ROOT / "Update.bat"
+    if not upd.exists():
+        return jsonify(ok=False, error="Update.bat not found")
+    try:
+        # Open the updater in its own console window so the user sees progress.
+        subprocess.Popen(["cmd", "/c", "start", "", str(upd)], cwd=str(REPO_ROOT))
+        return jsonify(ok=True)
+    except Exception as e:  # noqa: BLE001
+        return jsonify(ok=False, error=str(e))
 
 
 @app.post("/analyze")
