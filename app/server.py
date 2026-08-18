@@ -707,6 +707,10 @@ RESULTS_CSS = """
   .handle { fill:#fff; stroke:#0284c7; stroke-width:1.5px; }
   .h-nw,.h-se { cursor:nwse-resize; } .h-ne,.h-sw { cursor:nesw-resize; }
   .h-n,.h-s { cursor:ns-resize; } .h-e,.h-w { cursor:ew-resize; }
+  .scalebar { position:absolute; left:14px; bottom:14px; z-index:5; pointer-events:none; }
+  .scalebar-lbl { color:#fff; font-size:12px; font-weight:700; text-align:center; margin-bottom:3px;
+                  text-shadow:0 1px 3px #000, 0 0 3px #000; font-variant-numeric:tabular-nums; }
+  .scalebar-bar { height:7px; border:3px solid #fff; border-top:0; box-shadow:0 1px 3px rgba(0,0,0,.9); }
   .browse { position:fixed; inset:0; background:rgba(2,6,23,.6); z-index:60; display:flex; align-items:center; justify-content:center; }
   .browse.hidden { display:none; }
   .browse-panel { background:var(--card); border:1px solid var(--line); border-radius:14px;
@@ -1039,6 +1043,10 @@ RESULTS_JS = r"""
           <span class="help">class:</span>
           <span id="ecolclasses"></span>
         </div>
+        <div class="scalebar" id="escale">
+          <div class="scalebar-lbl" id="escalelbl"></div>
+          <div class="scalebar-bar" id="escalebar"></div>
+        </div>
       </div>
       <div class="mfoot">
         <span id="ecounts"></span>
@@ -1062,7 +1070,8 @@ RESULTS_JS = r"""
          title:$('#etitle'), name:$('#ename'), classes:$('#eclasses'), ecounts:$('#ecounts'),
          thr:$('#ethr'), thrval:$('#ethrval'), alt:$('#eAlt'),
          colony:$('#ecolony'), colcount:$('#ecolcount'), colclasses:$('#ecolclasses'),
-         saveRaw:$('#esaveRaw'), saveAnn:$('#esaveAnn') };
+         saveRaw:$('#esaveRaw'), saveAnn:$('#esaveAnn'),
+         scale:$('#escale'), scalebar:$('#escalebar'), scalelbl:$('#escalelbl') };
 
     ED.classes.innerHTML = ALL.map((c,i)=>
       `<button class="clsbtn" data-c="${c}" title="key ${i+1}"><span class="num">${i+1}</span>`+
@@ -1140,6 +1149,7 @@ RESULTS_JS = r"""
     ED.thrval.textContent = (+curImg().thr).toFixed(2);
     renderRects();
     renderHandles();
+    renderScaleBar();
     renderCounts();
     updateColonyPanel();
   }
@@ -1162,6 +1172,19 @@ RESULTS_JS = r"""
     ED.handles.innerHTML = P.map(([h,px,py])=>
       `<rect class="handle h-${h}" data-h="${h}" x="${px-hs/2}" y="${py-hs/2}" width="${hs}" height="${hs}" vector-effect="non-scaling-stroke"/>`
     ).join('');
+  }
+  function niceNumber(x){   // nearest 1/2/5 x 10^k
+    if(!(x>0)) return 1;
+    const p=Math.pow(10, Math.floor(Math.log10(x))), f=x/p;
+    return (f<1.5?1 : f<3.5?2 : f<7.5?5 : 10)*p;
+  }
+  function renderScaleBar(){   // pixel scale bar that grows/shrinks with zoom
+    let spi=0; try{ spi=ED.vp.getScreenCTM().a; }catch(e){}
+    if(!spi || !isFinite(spi) || spi<=0){ ED.scale.style.display='none'; return; }
+    const n = niceNumber(110/spi);   // aim for ~110 screen px, rounded to a nice value
+    ED.scale.style.display='';
+    ED.scalebar.style.width = Math.max(2, Math.round(n*spi))+'px';
+    ED.scalelbl.textContent = (n>=1 ? Math.round(n) : +n.toFixed(2)) + ' px';
   }
   function renderCounts(){
     const r=counts(curImg());
@@ -1325,7 +1348,8 @@ RESULTS_JS = r"""
     const before=toImg(e), vb=toVB(e);
     scale=clamp(scale*(e.deltaY<0?1.15:1/1.15), 0.4, 16);
     tx=vb.x-before.x*scale; ty=vb.y-before.y*scale; applyVP();
-    renderHandles();   // keep handle size constant on zoom
+    renderHandles();       // keep handle size constant on zoom
+    renderScaleBar();      // update the scale bar for the new zoom
   }
   function round(v){ return Math.round(v*10)/10; }
   function setTemp(x,y,w,h){ ED.temp.setAttribute('x',x); ED.temp.setAttribute('y',y);
