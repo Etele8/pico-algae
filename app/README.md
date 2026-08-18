@@ -98,6 +98,22 @@ REM ...or NVIDIA GPU build (swap cu126 for cu128 / cu130 to match the driver):
 
 The launcher uses `.venv\Scripts\python.exe` directly.
 
+## Updating (remote, no reinstall)
+
+To ship a new version to everyone: commit and push the code to
+`https://github.com/Etele8/pico-algae` (main). On each colleague's PC they
+double-click **`Update.bat`** — it downloads the latest code from GitHub and
+overwrites only the program files. It **does not** touch the `.venv`, the model
+(`runs/…`), saved captures, or the user's settings, so updates are small and
+fast even though the model is large. Any new Python packages in
+`requirements.txt` are installed automatically (PyTorch is left as-is).
+
+`Update.bat` writes the installed commit id and date to `app/VERSION.txt`, shown
+at the end of the update. If there's no internet the current version keeps
+working. The model itself is *not* in the repo, so retraining a model is
+delivered by replacing `runs/tuning/train/best_train_model.pt` (share the new
+file directly), not through `Update.bat`.
+
 ## What model it uses
 
 - Checkpoint: `runs/tuning/train/best_train_model.pt` — a 3-channel Faster R-CNN
@@ -113,6 +129,7 @@ To serve a different checkpoint, change `DEFAULT_CKPT` near the top of
 ## Files
 
 - `Install.bat` — interactive installer (choose CPU or GPU).
+- `Update.bat` — pulls the latest code from GitHub (keeps model/venv/data).
 - `Start Pico-Algae Counter.bat` — double-click launcher.
 - `app/server.py` — the Flask web app (UI + routes).
 - `app/pico_counter.py` — offline model loading, device selection, inference.

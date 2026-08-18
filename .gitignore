@@ -28,3 +28,6 @@ Thumbs.db
 
 # Distributable bundle (large; rebuild as needed)
 Pico-Algae-Counter.zip
+
+# Per-install version stamp written by Update.bat
+app/VERSION.txt
