@@ -27,24 +27,28 @@ identical on every machine), and an `index.csv`. Native formats are kept
 
 ---
 
+> **On the ITU HPC, every step below runs as a SLURM job via Apptainer — do
+> not run these commands on the login node.** Ready-made job scripts and the
+> submit order live in [`docker/hpc/README.md`](../docker/hpc/README.md); the raw
+> commands here are what those jobs execute, kept for reference.
+
 ## 1. Upload to the HPC
 
 ```bash
-# from repo root; adjust user@host and the remote path
-rsync -av --progress data/processed/dataset_merged \
-    USER@hpc.itu.dk:/home/USER/pico-algae/data/processed/
+# on the HPC login node:
+git clone https://github.com/Etele8/pico-algae.git ~/pico-algae   # or: git pull
 
-# and the code (or git clone/pull there)
-rsync -av --progress --exclude .venv --exclude 'Pico-Algae Captures' \
-    --exclude '*.pt' ./ USER@hpc.itu.dk:/home/USER/pico-algae/
+# from your laptop (dataset is NOT in git):
+scp -rp data/processed/dataset_merged \
+    USER@hpc.itu.dk:~/pico-algae/data/processed/
 ```
 
 The model (`runs/tuning/train/best_train_model.pt`, ~158 MB) is the warm-start
 seed — copy it too if you want to warm-start:
 
 ```bash
-rsync -av runs/tuning/train/best_train_model.pt \
-    USER@hpc.itu.dk:/home/USER/pico-algae/runs/tuning/train/
+scp -rp runs/tuning/train/best_train_model.pt \
+    USER@hpc.itu.dk:~/pico-algae/runs/tuning/train/
 ```
 
 ---
@@ -65,15 +69,18 @@ the printed histogram):
 python scripts/sanity_check_dataset.py --index_csv "$DS/index.csv" --n 20
 ```
 
-Environment (once): a venv/conda with torch+torchvision (CUDA build matching the
-node), plus `pip install -r requirements.txt`.
+Environment (once): reuse ITU's pre-made PyTorch container and add
+opencv/pandas/pyyaml — done by `docker/hpc/setup_env.job`. No venv or Docker Hub
+image is needed.
 
 ---
 
 ## 3. Train both models (same split, same seed → comparable)
 
 The `split` column in `index.csv` freezes the same 66-image validation set for
-both runs, so their count-MAE is directly comparable.
+both runs, so their count-MAE is directly comparable. On ITU submit these as
+`docker/hpc/train_6ch.job` and `docker/hpc/train_3ch.job` (they wrap exactly the
+commands below inside `apptainer exec --nv`).
 
 ```bash
 # 6-channel (og + red fusion)
@@ -128,29 +135,14 @@ better — only then rework the Olympus flow to also capture a red frame.
 The app (`app/pico_counter.py`) needs a 3-channel checkpoint that also carries
 its tuned settings under `params` (anchors/NMS) plus `classes_to_count` and
 `val_score_thresh`. `best_mae.pt` from the trainer only has `{"model", ...}`, so
-wrap it:
+wrap it with `scripts/package_for_app.py` (submit `docker/hpc/package_3ch.job`
+on ITU):
 
 ```bash
-python - <<'PY'
-import torch, yaml
-cfg = yaml.safe_load(open("src/configs/train_frcnn.yaml"))
-sp  = cfg.get("space", cfg)
-ck  = torch.load("runs/merged_3ch/checkpoints/best_mae.pt", map_location="cpu")
-state = ck["model"] if "model" in ck else ck
-out = {
-    "model": state,
-    "params": {
-        "anchor_sizes":  sp["anchor_sizes"],
-        "aspect_ratios": sp["aspect_ratios"],
-        "detections_per_image": cfg.get("detections_per_image", 300),
-        "box_nms_thresh": cfg.get("box_nms_thresh", 0.5),
-    },
-    "val_score_thresh": cfg.get("score_thresh", 0.5),
-    "classes_to_count": cfg.get("classes_to_count", [1, 2, 3]),
-}
-torch.save(out, "best_train_model.pt")
-print("wrote best_train_model.pt (3ch, app-ready)")
-PY
+python scripts/package_for_app.py \
+    --ckpt runs/merged_3ch/checkpoints/best_mae.pt \
+    --train_yaml src/configs/train_frcnn.yaml \
+    --out best_train_model.pt
 ```
 
 Download `best_train_model.pt`, drop it into `runs/tuning/train/` on each PC
