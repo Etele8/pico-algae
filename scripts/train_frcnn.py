@@ -82,6 +82,9 @@ def main():
                     help="3 = og-only (single-image, Olympus-friendly); 6 = og+red early fusion.")
     ap.add_argument("--init_checkpoint", type=str, default=None,
                     help="Warm-start from this .pt (matching tensors only).")
+    ap.add_argument("--resume", action="store_true",
+                    help="Resume from <out_dir>/checkpoints/last.pt if present "
+                         "(for preemption/requeue); takes precedence over --init_checkpoint.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.train_yaml).read_text(encoding="utf-8")) or {}
@@ -161,7 +164,13 @@ def main():
                        num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
 
     model = build_model()
-    if args.init_checkpoint:
+    resume_path = ckpt_dir / "last.pt"
+    resume_ck = None
+    if args.resume and resume_path.exists():
+        resume_ck = torch.load(resume_path, map_location="cpu")
+        model.load_state_dict(resume_ck["model"])
+        print(f"Resuming from {resume_path} (finished epoch {resume_ck.get('epoch', 0)})")
+    elif args.init_checkpoint:
         warm_start(model, args.init_checkpoint)
     model.to(device)
 
@@ -172,12 +181,29 @@ def main():
         weight_decay=weight_decay,
     )
     scheduler = build_scheduler(optimizer, step_size=max(1, epochs // 3), gamma=0.5)
-
     scaler = get_scaler(use_amp, device)
 
+    start_epoch = 1
     best = float("inf")
+    if resume_ck is not None:
+        if "optimizer" in resume_ck:
+            optimizer.load_state_dict(resume_ck["optimizer"])
+            for st in optimizer.state.values():  # move optimizer state to the device
+                for k, v in st.items():
+                    if isinstance(v, torch.Tensor):
+                        st[k] = v.to(device)
+        start_epoch = int(resume_ck.get("epoch", 0)) + 1
+        for _ in range(start_epoch - 1):  # fast-forward the LR schedule
+            scheduler.step()
+        best_path = ckpt_dir / "best_mae.pt"
+        if best_path.exists():
+            try:
+                best = float(torch.load(best_path, map_location="cpu").get("best_mae", best))
+            except Exception:
+                pass
+        print(f"Resuming at epoch {start_epoch}/{epochs}; best MAE so far {best}")
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
 
         tr = train_one_epoch(model, optimizer, dl_tr, device, epoch, scaler=scaler, log_every=20)

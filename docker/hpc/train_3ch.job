@@ -6,6 +6,11 @@
 #   sbatch docker/hpc/train_3ch.job
 #   sbatch docker/hpc/train_3ch.job --epochs 80        # extra flags pass through
 #
+# If acltr is booked for days, run on the preemptable queue instead:
+#   sbatch --partition=scavenge --gres=gpu:1 docker/hpc/train_3ch.job
+# --requeue + --resume (below) make that safe: a preempted job is requeued and
+# picks up from the last checkpoint instead of restarting.
+#
 # Overrides (env): REPO=, SIF=, INIT_CKPT= (set INIT_CKPT="" to skip warm-start)
 
 #SBATCH --job-name=pico_3ch
@@ -16,6 +21,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
+#SBATCH --requeue
 # acltr = general-access GPU nodes. A TYPED --gres is required or the job sees
 # no GPU. v100 (32GB) is plentiful; swap for gpu:a30:1, gpu:a100_40gb:1,
 # gpu:l40s:1, gpu:rtx8000:1 ... (see `sinfo -o "%P %G %N"`), or override at submit
@@ -54,7 +60,7 @@ apptainer exec --nv "$SIF" \
         --index_csv '$DS/index.csv' \
         --out_dir runs/merged_3ch \
         --train_yaml src/configs/train_frcnn.yaml \
-        --channels 3 $INIT_ARG $*"
+        --channels 3 --resume $INIT_ARG $*"
 
 echo
 echo "Done. Best checkpoint: $REPO/runs/merged_3ch/checkpoints/best_mae.pt"
