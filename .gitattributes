@@ -1,5 +1,10 @@
 # Batch files must keep CRLF endings, or cmd.exe mis-parses them.
 *.bat text eol=crlf
 
+# Shell/SLURM/Apptainer scripts run on Linux — force LF, or bash chokes on \r.
+*.job  text eol=lf
+*.sh   text eol=lf
+*.def  text eol=lf
+
 # Normalize everything else to LF in the repo.
 * text=auto
