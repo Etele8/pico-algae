@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-$HOME/pico-algae}"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/pico-algae}}"
 SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
 DS="$REPO/data/processed/dataset_merged"
 

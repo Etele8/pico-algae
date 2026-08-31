@@ -5,6 +5,7 @@ inside **Apptainer** containers. ITU already ships a PyTorch container, so there
 is **nothing to build or pull** — we reuse it and add three small packages.
 
 Facts these jobs rely on (from ITU's HPC intro, hpc.itu.dk):
+
 - Login: `ssh USER@hpc.itu.dk`. Your files live in `/home/USER` — **no backup**,
   so download trained models promptly.
 - Partitions: **`acltr`** = general GPU nodes (3-day student limit);
@@ -16,17 +17,26 @@ Facts these jobs rely on (from ITU's HPC intro, hpc.itu.dk):
 
 ## 1. Get code + data onto the HPC
 
+Clone wherever you like — the jobs default `REPO` to `$SLURM_SUBMIT_DIR`, i.e. the
+directory you run `sbatch` from, so **always submit from the repo root** and the
+clone path doesn't matter (this README uses `~/pico-algae`; adjust to yours, e.g.
+`~/projects/pico-algae`). The merged dataset must sit under that repo at
+`data/processed/dataset_merged`.
+
 ```bash
 # on the HPC login node:
-git clone https://github.com/Etele8/pico-algae.git ~/pico-algae      # or: cd ~/pico-algae && git pull
+git clone https://github.com/Etele8/pico-algae.git ~/pico-algae      # or: cd <repo> && git pull
 
-# from your laptop (the merged dataset is NOT in git):
+# from your laptop (the merged dataset is NOT in git) — target YOUR repo path:
 scp -rp data/processed/dataset_merged \
     USER@hpc.itu.dk:~/pico-algae/data/processed/
 # optional warm-start seed (the current served model, ~158 MB):
 scp -rp runs/tuning/train/best_train_model.pt \
     USER@hpc.itu.dk:~/pico-algae/runs/tuning/train/
 ```
+
+> If you cloned elsewhere, either `cd` there before `sbatch`, or pass it
+> explicitly: `REPO=$HOME/projects/pico-algae sbatch docker/hpc/prepare_index.job`.
 
 `ls /opt/itu/containers/` to confirm the current PyTorch SIF name; if it differs
 from the default in the jobs, pass `SIF=/opt/itu/containers/.../<name>.sif` to
@@ -66,22 +76,24 @@ sbatch docker/hpc/package_3ch.job        # wrap best 3ch -> app-ready best_train
 ```
 
 Then, from your laptop:
+
 ```bash
 scp -rp USER@hpc.itu.dk:~/pico-algae/best_train_model.pt .
 ```
+
 and drop it into `runs/tuning/train/` on each PC. Ship 3ch unless 6ch is
 *significantly* better (the app rejects non-3ch checkpoints today).
 
 ## Files
 
-| file | partition | what it does |
-|---|---|---|
-| `setup_env.job` | scavenge | add opencv/pandas/pyyaml to `~/.local`, verify imports |
-| `prepare_index.job` | scavenge | regenerate `index.csv`/`split.csv` with cluster paths |
-| `train_3ch.job` | acltr (GPU) | train og-only model → `runs/merged_3ch` |
-| `train_6ch.job` | acltr (GPU) | train og+red fusion → `runs/merged_6ch` |
-| `package_3ch.job` | scavenge | wrap best 3ch into the app's checkpoint format |
-| `pico.def` + `build_container.job` | scavenge | *fallback* self-contained SIF (no Docker Hub) |
+| file                                   | partition   | what it does                                             |
+| -------------------------------------- | ----------- | -------------------------------------------------------- |
+| `setup_env.job`                      | scavenge    | add opencv/pandas/pyyaml to`~/.local`, verify imports  |
+| `prepare_index.job`                  | scavenge    | regenerate`index.csv`/`split.csv` with cluster paths |
+| `train_3ch.job`                      | acltr (GPU) | train og-only model →`runs/merged_3ch`                |
+| `train_6ch.job`                      | acltr (GPU) | train og+red fusion →`runs/merged_6ch`                |
+| `package_3ch.job`                    | scavenge    | wrap best 3ch into the app's checkpoint format           |
+| `pico.def` + `build_container.job` | scavenge    | *fallback* self-contained SIF (no Docker Hub)          |
 
 ## Knobs
 

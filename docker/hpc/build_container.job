@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-$HOME/pico-algae}"
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/pico-algae}}"
 OUT="${OUT:-$HOME/containers/pico-algae.sif}"
 DEF="$REPO/docker/hpc/pico.def"
 
