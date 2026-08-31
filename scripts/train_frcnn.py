@@ -97,6 +97,10 @@ def main():
                     help="Override the yaml epoch count.")
     ap.add_argument("--lr_scale", type=float, default=1.0,
                     help="Multiply both learning rates (use when raising batch_size).")
+    ap.add_argument("--train_all", action="store_true",
+                    help="Train on ALL images (ignore the val split) for the final "
+                         "shipped model; skips validation and saves the last epoch as "
+                         "best_mae.pt. Use after CV has chosen the config.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.train_yaml).read_text(encoding="utf-8")) or {}
@@ -147,33 +151,32 @@ def main():
     else:
         tfm = IdentityTransform()
 
-    if args.channels == 6:
-        ds_tr = PicoOgRedDetectionDataset(split.train, transform=tfm, keep_empty=True)
-        ds_va = PicoOgRedDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
-        build_model = lambda: build_frcnn_resnet50_fpn_coco_6ch(
-            num_classes=5,
-            trainable_backbone_layers=trainable_backbone_layers,
-            anchor_sizes=anchor_sizes,
-            aspect_ratios=aspect_ratios,
-            detections_per_image=detections_per_image,
-            box_nms_thresh=box_nms_thresh,
-        )
-    else:
-        ds_tr = PicoOgDetectionDataset(split.train, transform=tfm, keep_empty=True)
-        ds_va = PicoOgDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
-        build_model = lambda: build_frcnn_resnet50_fpn_coco(
-            num_classes=5,
-            trainable_backbone_layers=trainable_backbone_layers,
-            anchor_sizes=anchor_sizes,
-            aspect_ratios=aspect_ratios,
-            detections_per_image=detections_per_image,
-            box_nms_thresh=box_nms_thresh,
-        )
+    train_df = df if args.train_all else split.train
+    if args.train_all:
+        print(f"--train_all: training on ALL {len(df)} images, no validation holdout")
 
+    DatasetCls = PicoOgRedDetectionDataset if args.channels == 6 else PicoOgDetectionDataset
+    _builder = build_frcnn_resnet50_fpn_coco_6ch if args.channels == 6 else build_frcnn_resnet50_fpn_coco
+
+    ds_tr = DatasetCls(train_df, transform=tfm, keep_empty=True)
     dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True,
                        num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
-    dl_va = DataLoader(ds_va, batch_size=1, shuffle=False,
-                       num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
+
+    dl_va = None
+    if not args.train_all:
+        ds_va = DatasetCls(split.val, transform=IdentityTransform(), keep_empty=True)
+        dl_va = DataLoader(ds_va, batch_size=1, shuffle=False,
+                           num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
+
+    def build_model():
+        return _builder(
+            num_classes=5,
+            trainable_backbone_layers=trainable_backbone_layers,
+            anchor_sizes=anchor_sizes,
+            aspect_ratios=aspect_ratios,
+            detections_per_image=detections_per_image,
+            box_nms_thresh=box_nms_thresh,
+        )
 
     model = build_model()
     resume_path = ckpt_dir / "last.pt"
@@ -219,27 +222,34 @@ def main():
         t0 = time.time()
 
         tr = train_one_epoch(model, optimizer, dl_tr, device, epoch, scaler=scaler, log_every=20)
-        va = evaluate_count_metrics(
-            model,
-            dl_va,
-            device,
-            score_thresh=score_thresh,
-            classes_to_count=classes_to_count,
-            per_class_score_thresh=per_class_score_thresh,
-        )
         scheduler.step()
 
-        row = {"epoch": epoch, **tr, **va, "lr": float(optimizer.param_groups[0]["lr"]), "time_s": time.time() - t0}
+        row = {"epoch": epoch, **tr, "lr": float(optimizer.param_groups[0]["lr"]), "time_s": time.time() - t0}
+        va = None
+        if dl_va is not None:
+            va = evaluate_count_metrics(
+                model,
+                dl_va,
+                device,
+                score_thresh=score_thresh,
+                classes_to_count=classes_to_count,
+                per_class_score_thresh=per_class_score_thresh,
+            )
+            row.update(va)
         print(row)
         append_jsonl(log_path, row)
 
         save_checkpoint(ckpt_dir / "last.pt", model, optimizer=optimizer, epoch=epoch)
 
-        if va["count_mae"] < best:
+        if va is not None and va["count_mae"] < best:
             best = va["count_mae"]
             save_checkpoint(ckpt_dir / "best_mae.pt", model, epoch=epoch, extra={"best_mae": best})
             print("  saved best_mae.pt (best_mae=", best, ")")
 
+    if dl_va is None:
+        # No validation holdout (train_all): the final epoch IS the shipped model.
+        save_checkpoint(ckpt_dir / "best_mae.pt", model, epoch=epochs, extra={"best_mae": None})
+        print(f"--train_all: saved final model to {ckpt_dir / 'best_mae.pt'}")
     print("Done. Best MAE:", best)
 
 
