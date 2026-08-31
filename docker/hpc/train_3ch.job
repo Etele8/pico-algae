@@ -15,12 +15,15 @@
 #SBATCH --gres=gpu:v100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=06:00:00
 # acltr = general-access GPU nodes. A TYPED --gres is required or the job sees
 # no GPU. v100 (32GB) is plentiful; swap for gpu:a30:1, gpu:a100_40gb:1,
-# gpu:l40s:1, gpu:rtx8000:1 ... (see `sinfo -o "%P %G %N"`). Student time cap on
-# acltr is 3 days; do NOT exceed it. With Apptainer --nv you do NOT module-load
-# CUDA -- the container ships it and --nv passes the driver through.
+# gpu:l40s:1, gpu:rtx8000:1 ... (see `sinfo -o "%P %G %N"`), or override at submit
+# with `sbatch --gres=... `. --time is kept SHORT on purpose: a tight limit lets
+# the backfill scheduler start you in a gap instead of waiting behind higher-
+# priority jobs. 6h covers 60 epochs here; raise it if your node is slow (the
+# trainer checkpoints every epoch, so hitting the limit still leaves best_mae.pt).
+# With Apptainer --nv you do NOT module-load CUDA -- the container ships it.
 
 set -euo pipefail
 
