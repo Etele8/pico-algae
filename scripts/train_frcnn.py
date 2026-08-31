@@ -91,18 +91,24 @@ def main():
     ap.add_argument("--resume", action="store_true",
                     help="Resume from <out_dir>/checkpoints/last.pt if present "
                          "(for preemption/requeue); takes precedence over --init_checkpoint.")
+    ap.add_argument("--batch_size", type=int, default=None,
+                    help="Override the yaml batch_size (e.g. 8 on a 48GB L40S).")
+    ap.add_argument("--epochs", type=int, default=None,
+                    help="Override the yaml epoch count.")
+    ap.add_argument("--lr_scale", type=float, default=1.0,
+                    help="Multiply both learning rates (use when raising batch_size).")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.train_yaml).read_text(encoding="utf-8")) or {}
 
     seed = int(cfg.get("seed", 42))
-    epochs = int(cfg.get("epochs", 20))
-    batch_size = int(cfg.get("batch_size", 2))
+    epochs = int(args.epochs if args.epochs is not None else cfg.get("epochs", 20))
+    batch_size = int(args.batch_size if args.batch_size is not None else cfg.get("batch_size", 2))
     num_workers = int(cfg.get("num_workers", 4))
     weight_decay = float(cfg.get("weight_decay", 1e-4))
     trainable_backbone_layers = int(cfg.get("trainable_backbone_layers", 2))
-    lr_backbone = float(cfg.get("lr_backbone", cfg.get("lr", 1e-5)))
-    lr_heads = float(cfg.get("lr_heads", cfg.get("lr", 1e-4)))
+    lr_backbone = float(cfg.get("lr_backbone", cfg.get("lr", 1e-5))) * args.lr_scale
+    lr_heads = float(cfg.get("lr_heads", cfg.get("lr", 1e-4))) * args.lr_scale
     val_frac = float(cfg.get("val_frac", 0.2))
     use_amp = as_bool(cfg.get("amp", False))
     score_thresh = float(cfg.get("score_thresh", 0.5))
