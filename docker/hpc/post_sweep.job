@@ -1,0 +1,52 @@
+#!/bin/bash
+# Proper benchmark, step 2: post-hoc threshold sweep (the "fine-tune sweep").
+# Takes the CV checkpoint from cv_tune.job and sweeps score/NMS/per-class
+# thresholds, reporting the cross-validated tuned count-MAE (the 2.42-style
+# number comparable to the old model). No training -- inference only, fast.
+#
+# Submit (after cv_tune.job finished, matching CH):
+#   CH=3 sbatch --partition=scavenge --nodelist=cn19 --gres=gpu:l40s:1 docker/hpc/post_sweep.job
+#   CH=3 CKPT=runs/cv_3ch/best_train_model.pt sbatch ... docker/hpc/post_sweep.job
+#
+# Overrides (env): REPO=, SIF=, CH=(3|6), CKPT=, YAML=, OUT=
+
+#SBATCH --job-name=pico_post
+#SBATCH --output=pico_post_%j.out
+#SBATCH --error=pico_post_%j.err
+#SBATCH --partition=acltr
+#SBATCH --gres=gpu:v100:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=03:00:00
+
+set -euo pipefail
+
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/pico-algae}}"
+SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
+DS="$REPO/data/processed/dataset_merged"
+CH="${CH:-3}"
+CKPT="${CKPT:-runs/cv_${CH}ch/best_train_model.pt}"
+YAML="${YAML:-src/configs/tune_frcnn_post.yaml}"
+OUT="${OUT:-runs/post_${CH}ch}"
+
+[ -e "$SIF" ]          || { echo "SIF not found: $SIF"                       >&2; exit 1; }
+[ -f "$DS/index.csv" ] || { echo "index.csv missing (run prepare_index.job)" >&2; exit 1; }
+[ -f "$REPO/$CKPT" ]   || { echo "Checkpoint not found: $REPO/$CKPT (run cv_tune.job first)" >&2; exit 1; }
+
+echo "Node : $(hostname)"
+echo "Chan : $CH   Ckpt : $CKPT   Out : $OUT"
+echo
+nvidia-smi | head -20
+echo
+
+apptainer exec --nv "$SIF" \
+    bash -c "cd '$REPO' && python scripts/tune_frcnn_post.py \
+        --index_csv '$DS/index.csv' \
+        --post_yaml '$YAML' \
+        --checkpoint '$CKPT' \
+        --out_dir '$OUT' \
+        --channels $CH \
+        --device cuda $*"
+
+echo
+echo "Done. Best tuned config + MAE: $REPO/$OUT/best_post_summary.json"

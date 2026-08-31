@@ -1,0 +1,59 @@
+#!/bin/bash
+# Proper benchmark, step 1: k-fold CV hyperparameter search (same method that
+# produced the current served model). Trains every trial x fold and reports the
+# cross-validated count-MAE, then saves the best config's checkpoint (WITH its
+# params) to runs/cv_<ch>ch/best_train_model.pt.
+#
+# Cost: driven by src/configs/tune_frcnn_train.yaml (trials x k_folds x epochs).
+# Default 12 x 5 x 10 = 600 short trainings -- hours, not minutes. Give it time.
+#
+# Submit (3-channel, the likely ship):
+#   CH=3 sbatch --partition=scavenge --nodelist=cn19 --gres=gpu:l40s:1 docker/hpc/cv_tune.job
+#   CH=6 sbatch --partition=scavenge --nodelist=cn19 --gres=gpu:l40s:1 docker/hpc/cv_tune.job
+#
+# Overrides (env): REPO=, SIF=, CH=(3|6), YAML=, OUT=
+
+#SBATCH --job-name=pico_cv
+#SBATCH --output=pico_cv_%j.out
+#SBATCH --error=pico_cv_%j.err
+#SBATCH --partition=acltr
+#SBATCH --gres=gpu:v100:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=23:00:00
+# Long job: the CV search is many short trainings. Run it on an idle node (cn19)
+# to avoid preemption -- the tuner writes results incrementally but does NOT
+# resume a killed run, so a preemption restarts the whole search.
+
+set -euo pipefail
+
+REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/pico-algae}}"
+SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
+DS="$REPO/data/processed/dataset_merged"
+CH="${CH:-3}"
+YAML="${YAML:-src/configs/tune_frcnn_train.yaml}"
+OUT="${OUT:-runs/cv_${CH}ch}"
+
+[ -e "$SIF" ]          || { echo "SIF not found: $SIF"                       >&2; exit 1; }
+[ -f "$DS/index.csv" ] || { echo "index.csv missing (run prepare_index.job)" >&2; exit 1; }
+[ -d "$REPO/src" ]     || { echo "Repo not found at $REPO"                    >&2; exit 1; }
+
+echo "Node : $(hostname)"
+echo "Repo : $REPO"
+echo "Chan : $CH   Yaml : $YAML   Out : $OUT"
+echo
+nvidia-smi | head -20
+echo
+
+apptainer exec --nv "$SIF" \
+    bash -c "cd '$REPO' && python scripts/tune_frcnn_train.py \
+        --index_csv '$DS/index.csv' \
+        --tune_yaml '$YAML' \
+        --out_dir '$OUT' \
+        --channels $CH \
+        --device cuda $*"
+
+echo
+echo "Done. CV summary: $REPO/$OUT/best_train_model_summary.json"
+echo "Checkpoint (for the threshold sweep): $REPO/$OUT/best_train_model.pt"
+echo "NOTE: /home has no backup -- download results promptly."

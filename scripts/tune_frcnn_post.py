@@ -20,10 +20,12 @@ from src.utils.logging import append_jsonl
 
 from src.datasets.dataset_index_6ch import load_index_6ch
 from src.datasets.pico_dataset_6ch import PicoOgRedDetectionDataset
+from src.datasets.pico_dataset import PicoOgDetectionDataset
 from src.datasets.collate import detection_collate
 from src.datasets.transforms import IdentityTransform
 
 from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
+from src.models.frcnn import build_frcnn_resnet50_fpn_coco
 from src.train.evaluate import evaluate_count_metrics
 
 # python scripts/tune_frcnn_post.py --index_csv data/processed/dataset_2048x1500_webp/index.csv --post_yaml src/configs/tune_frcnn_post.yaml --checkpoint runs/tuning/train/best_train_model.pt --out_dir runs/tuning/post --device cuda
@@ -51,7 +53,17 @@ def main():
     ap.add_argument("--checkpoint", required=True, type=str, help="Path to best_train_model.pt")
     ap.add_argument("--out_dir", required=True, type=str)
     ap.add_argument("--device", default="", type=str)
+    ap.add_argument("--channels", type=int, choices=(3, 6), default=6,
+                    help="Must match the checkpoint: 3 = og-only, 6 = og+red fusion.")
     args = ap.parse_args()
+
+    if args.channels == 6:
+        DatasetCls = PicoOgRedDetectionDataset
+        build_model_fn = build_frcnn_resnet50_fpn_coco_6ch
+    else:
+        DatasetCls = PicoOgDetectionDataset
+        build_model_fn = build_frcnn_resnet50_fpn_coco
+    print(f"Channels: {args.channels}")
 
     post_cfg = yaml.safe_load(Path(args.post_yaml).read_text(encoding="utf-8"))
 
@@ -109,7 +121,7 @@ def main():
     fold_val_loaders = []
     for fold_i, (_tr_idx, va_idx) in enumerate(folds, start=1):
         df_va = df.iloc[va_idx].reset_index(drop=True)
-        ds_va = PicoOgRedDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
+        ds_va = DatasetCls(df_va, transform=IdentityTransform(), keep_empty=True)
         dl_kwargs = {
             "num_workers": num_workers,
             "pin_memory": pin_memory,
@@ -144,7 +156,7 @@ def main():
         fold_bias = []
 
         # Rebuild model with current post params (NMS + dets) and load SAME weights
-        model = build_frcnn_resnet50_fpn_coco_6ch(
+        model = build_model_fn(
             num_classes=5,
             trainable_backbone_layers=int(base_params.get("trainable_backbone_layers", 2)),
             anchor_sizes=anchor_sizes_tt,

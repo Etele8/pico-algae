@@ -21,10 +21,12 @@ from src.utils.logging import append_jsonl
 
 from src.datasets.dataset_index_6ch import load_index_6ch
 from src.datasets.pico_dataset_6ch import PicoOgRedDetectionDataset
+from src.datasets.pico_dataset import PicoOgDetectionDataset
 from src.datasets.collate import detection_collate
 from src.datasets.transforms import IdentityTransform
 
 from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
+from src.models.frcnn import build_frcnn_resnet50_fpn_coco
 from src.train.optimizer import build_optimizer_two_groups
 from src.train.scheduler import build_scheduler
 from src.train.amp import get_scaler
@@ -72,7 +74,17 @@ def main():
     ap.add_argument("--tune_yaml", required=True, type=str)
     ap.add_argument("--out_dir", required=True, type=str)
     ap.add_argument("--device", default='cuda', type=str, help="'' auto, or 'cuda', or 'cpu'")
+    ap.add_argument("--channels", type=int, choices=(3, 6), default=6,
+                    help="3 = og-only, 6 = og+red early fusion.")
     args = ap.parse_args()
+
+    if args.channels == 6:
+        DatasetCls = PicoOgRedDetectionDataset
+        build_model_fn = build_frcnn_resnet50_fpn_coco_6ch
+    else:
+        DatasetCls = PicoOgDetectionDataset
+        build_model_fn = build_frcnn_resnet50_fpn_coco
+    print(f"Channels: {args.channels}")
 
     tune_cfg = yaml.safe_load(Path(args.tune_yaml).read_text(encoding="utf-8"))
 
@@ -142,8 +154,8 @@ def main():
             df_tr = df.iloc[tr_idx].reset_index(drop=True)
             df_va = df.iloc[va_idx].reset_index(drop=True)
 
-            ds_tr = PicoOgRedDetectionDataset(df_tr, transform=IdentityTransform(), keep_empty=True)
-            ds_va = PicoOgRedDetectionDataset(df_va, transform=IdentityTransform(), keep_empty=True)
+            ds_tr = DatasetCls(df_tr, transform=IdentityTransform(), keep_empty=True)
+            ds_va = DatasetCls(df_va, transform=IdentityTransform(), keep_empty=True)
 
             batch_size = int(params.get("batch_size", 2))
 
@@ -169,7 +181,7 @@ def main():
                 **dl_kwargs,
             )
 
-            model = build_frcnn_resnet50_fpn_coco_6ch(
+            model = build_model_fn(
                 num_classes=5,
                 trainable_backbone_layers=int(params.get("trainable_backbone_layers", 2)),
                 anchor_sizes=anchor_sizes_tt,
