@@ -11,12 +11,14 @@ from src.utils.seed import seed_everything
 from src.utils.io import ensure_dir
 from src.utils.logging import append_jsonl
 
-from src.datasets.dataset_index_6ch import load_index_6ch, random_split_df
+from src.datasets.dataset_index_6ch import load_index_6ch, random_split_df, IndexSplit
 from src.datasets.pico_dataset_6ch import PicoOgRedDetectionDataset
+from src.datasets.pico_dataset import PicoOgDetectionDataset
 from src.datasets.collate import detection_collate
 from src.datasets.transforms import IdentityTransform, RandomHorizontalFlip
 
 from src.models.frcnn_6ch import build_frcnn_resnet50_fpn_coco_6ch
+from src.models.frcnn import build_frcnn_resnet50_fpn_coco
 from src.models.weights import save_checkpoint
 
 from src.train.optimizer import build_optimizer_two_groups
@@ -39,11 +41,47 @@ def as_bool(x) -> bool:
     return bool(x)
 
 
+def split_df(df, val_frac: float, seed: int) -> IndexSplit:
+    """Use a frozen `split` column if present (train/val), else a seeded
+    random split. The frozen column guarantees the SAME val set across the
+    3ch and 6ch runs, so their count-MAE is comparable."""
+    if "split" in df.columns:
+        tr = df[df["split"].astype(str).str.lower() == "train"].reset_index(drop=True)
+        va = df[df["split"].astype(str).str.lower() == "val"].reset_index(drop=True)
+        if len(tr) and len(va):
+            print(f"Using frozen split column: train {len(tr)} / val {len(va)}")
+            return IndexSplit(train=tr, val=va)
+        print("[warn] 'split' column present but empty on one side — falling back to random split")
+    return random_split_df(df, val_frac=val_frac, seed=seed)
+
+
+def warm_start(model, ckpt_path: str) -> None:
+    """Load matching weights from an existing checkpoint (non-strict).
+
+    3ch -> 3ch matches fully; loading a 3ch checkpoint into the 6ch model
+    keeps everything except the first conv (6 vs 3 input channels), which
+    stays at its COCO init. Reports what was skipped."""
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
+    own = model.state_dict()
+    keep = {k: v for k, v in state.items() if k in own and own[k].shape == v.shape}
+    skipped = [k for k in state if k not in keep]
+    missing = model.load_state_dict(keep, strict=False)
+    print(f"Warm-start from {ckpt_path}: loaded {len(keep)}/{len(state)} tensors; "
+          f"skipped {len(skipped)} (shape/name mismatch).")
+    if skipped:
+        print("  e.g. skipped:", ", ".join(skipped[:4]))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--index_csv", required=True, type=str)
     ap.add_argument("--out_dir", required=True, type=str)
     ap.add_argument("--train_yaml", required=True, type=str)
+    ap.add_argument("--channels", type=int, choices=(3, 6), default=6,
+                    help="3 = og-only (single-image, Olympus-friendly); 6 = og+red early fusion.")
+    ap.add_argument("--init_checkpoint", type=str, default=None,
+                    help="Warm-start from this .pt (matching tensors only).")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.train_yaml).read_text(encoding="utf-8")) or {}
@@ -85,7 +123,8 @@ def main():
     print("Device:", device)
 
     df = load_index_6ch(Path(args.index_csv))
-    split = random_split_df(df, val_frac=val_frac, seed=seed)
+    split = split_df(df, val_frac=val_frac, seed=seed)
+    print(f"Channels: {args.channels}  ({'og+red fusion' if args.channels == 6 else 'og-only'})")
 
     # transforms (keep geometry simple at first)
     if flip_p > 0:
@@ -93,22 +132,37 @@ def main():
     else:
         tfm = IdentityTransform()
 
-    ds_tr = PicoOgRedDetectionDataset(split.train, transform=tfm, keep_empty=True)
-    ds_va = PicoOgRedDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
+    if args.channels == 6:
+        ds_tr = PicoOgRedDetectionDataset(split.train, transform=tfm, keep_empty=True)
+        ds_va = PicoOgRedDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
+        build_model = lambda: build_frcnn_resnet50_fpn_coco_6ch(
+            num_classes=5,
+            trainable_backbone_layers=trainable_backbone_layers,
+            anchor_sizes=anchor_sizes,
+            aspect_ratios=aspect_ratios,
+            detections_per_image=detections_per_image,
+            box_nms_thresh=box_nms_thresh,
+        )
+    else:
+        ds_tr = PicoOgDetectionDataset(split.train, transform=tfm, keep_empty=True)
+        ds_va = PicoOgDetectionDataset(split.val, transform=IdentityTransform(), keep_empty=True)
+        build_model = lambda: build_frcnn_resnet50_fpn_coco(
+            num_classes=5,
+            trainable_backbone_layers=trainable_backbone_layers,
+            anchor_sizes=anchor_sizes,
+            aspect_ratios=aspect_ratios,
+            detections_per_image=detections_per_image,
+            box_nms_thresh=box_nms_thresh,
+        )
 
     dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True,
                        num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
     dl_va = DataLoader(ds_va, batch_size=1, shuffle=False,
                        num_workers=num_workers, pin_memory=True, collate_fn=detection_collate)
 
-    model = build_frcnn_resnet50_fpn_coco_6ch(
-        num_classes=5,
-        trainable_backbone_layers=trainable_backbone_layers,
-        anchor_sizes=anchor_sizes,
-        aspect_ratios=aspect_ratios,
-        detections_per_image=detections_per_image,
-        box_nms_thresh=box_nms_thresh,
-    )
+    model = build_model()
+    if args.init_checkpoint:
+        warm_start(model, args.init_checkpoint)
     model.to(device)
 
     optimizer = build_optimizer_two_groups(
