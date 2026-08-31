@@ -1,7 +1,13 @@
 from __future__ import annotations
 import argparse
+import os
+import sys
 import time
 from pathlib import Path
+
+# Make `src` importable when run as `python scripts/train_frcnn.py` (Python puts
+# scripts/ on sys.path, not the repo root). Matches tune_frcnn_train.py.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import torch
 import yaml
