@@ -1,0 +1,39 @@
+#!/bin/bash
+# (Re)generate index.csv/split.csv for the merged dataset with cluster-local
+# paths. CPU-only, seconds. Run ONCE after uploading data/processed/dataset_merged
+# to the HPC, before the training jobs.
+#
+# Submit with:
+#   sbatch docker/hpc/prepare_index.job
+#   REPO=$HOME/pico-algae sbatch docker/hpc/prepare_index.job     # override repo path
+
+#SBATCH --job-name=pico_index
+#SBATCH --output=pico_index_%j.out
+#SBATCH --error=pico_index_%j.err
+#SBATCH --partition=scavenge
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --time=00:10:00
+
+set -euo pipefail
+
+REPO="${REPO:-$HOME/pico-algae}"
+SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
+DS="$REPO/data/processed/dataset_merged"
+
+[ -e "$SIF" ]      || { echo "SIF not found: $SIF (run: ls /opt/itu/containers/)" >&2; exit 1; }
+[ -d "$DS" ]       || { echo "Dataset not found: $DS (scp it up first)"          >&2; exit 1; }
+[ -d "$REPO/src" ] || { echo "Repo not found at $REPO (git clone first)"         >&2; exit 1; }
+
+echo "Node : $(hostname)"
+echo "Repo : $REPO"
+echo "Data : $DS"
+echo
+
+# $HOME is auto-bind-mounted by Apptainer, so $REPO/$DS pass through unchanged.
+apptainer exec "$SIF" \
+    bash -c "cd '$REPO' && python scripts/build_merged_dataset.py \
+        --index-only --out-dir '$DS' --root '$DS'"
+
+echo
+echo "Index ready: $DS/index.csv"

@@ -1,0 +1,55 @@
+#!/bin/bash
+# One-off: add the few Python packages our code needs on top of ITU's pre-made
+# PyTorch container, and verify everything imports. Run this ONCE before the
+# other jobs. Installs into your ~/.local (user site), which the container
+# picks up automatically on later runs.
+#
+# ITU already ships a PyTorch SIF (see `ls /opt/itu/containers/`), so there is
+# NO Docker Hub image to build or pull. We just add OpenCV/pandas/PyYAML.
+#
+# Submit with:
+#   sbatch docker/hpc/setup_env.job
+
+#SBATCH --job-name=pico_setup
+#SBATCH --output=pico_setup_%j.out
+#SBATCH --error=pico_setup_%j.err
+#SBATCH --partition=scavenge
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --time=00:30:00
+
+set -euo pipefail
+
+# ITU's pre-made NGC PyTorch container. Check the exact name with
+#   ls /opt/itu/containers/
+# and override with SIF=... if the version differs.
+SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
+
+[ -e "$SIF" ] || { echo "SIF not found: $SIF  (run: ls /opt/itu/containers/)" >&2; exit 1; }
+
+echo "Node : $(hostname)"
+echo "SIF  : $SIF"
+echo
+
+# torch/torchvision/numpy come from the container; we only add these three.
+# --user puts them in ~/.local so every later job sees them. (If pip complains
+# about an externally-managed environment, add --break-system-packages.)
+apptainer exec "$SIF" bash -c '
+    set -e
+    python -m pip install --user --no-cache-dir opencv-python-headless pandas pyyaml
+    echo
+    echo "-- versions --"
+    python - <<PY
+import torch, torchvision, numpy, cv2, pandas, yaml
+print("torch      ", torch.__version__)
+print("torchvision", torchvision.__version__)
+print("numpy      ", numpy.__version__)
+print("cv2        ", cv2.__version__)
+print("pandas     ", pandas.__version__)
+print("pyyaml     ", yaml.__version__)
+print("OK - all imports resolve")
+PY
+'
+
+echo
+echo "Environment ready. If the imports above printed OK, submit prepare_index.job next."

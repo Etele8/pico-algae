@@ -1,0 +1,56 @@
+#!/bin/bash
+# FALLBACK: build a self-contained pico-algae.sif from pico.def, in a job.
+# Only needed if setup_env.job's imports don't resolve. After it succeeds, run
+# the other jobs with SIF=$HOME/containers/pico-algae.sif, e.g.
+#   SIF=$HOME/containers/pico-algae.sif sbatch docker/hpc/train_3ch.job
+#
+# Submit with:
+#   sbatch docker/hpc/build_container.job
+#
+# NOTE: unprivileged `apptainer build` may need --fakeroot (enabled per-user by
+# the admin). If it fails with a privilege error, e-mail hpc@itu.dk / iner@itu.dk
+# to enable fakeroot, or ask them to build it for you (see the intro deck).
+
+#SBATCH --job-name=pico_build
+#SBATCH --output=pico_build_%j.out
+#SBATCH --error=pico_build_%j.err
+#SBATCH --partition=scavenge
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=02:00:00
+
+set -euo pipefail
+
+REPO="${REPO:-$HOME/pico-algae}"
+OUT="${OUT:-$HOME/containers/pico-algae.sif}"
+DEF="$REPO/docker/hpc/pico.def"
+
+mkdir -p "$(dirname "$OUT")"
+[ -f "$DEF" ] || { echo "Definition not found: $DEF" >&2; exit 1; }
+
+# Build onto the node's local scratch (fast NVMe) then move the result to $HOME,
+# so Apptainer's temp/cache churn doesn't hammer NFS.
+JOB_TAG="${SLURM_JOB_ID:-build_$$}"
+SCRATCH=""
+for c in "${SLURM_TMPDIR:-}" "/scratch/$USER/$JOB_TAG" "/scratch/$JOB_TAG" "/tmp/$USER/$JOB_TAG"; do
+    [ -z "$c" ] && continue
+    if mkdir -p "$c/tmp" "$c/cache" 2>/dev/null; then SCRATCH="$c"; break; fi
+done
+[ -n "$SCRATCH" ] || { echo "no writable scratch dir" >&2; exit 1; }
+export APPTAINER_TMPDIR="$SCRATCH/tmp" APPTAINER_CACHEDIR="$SCRATCH/cache"
+trap 'rm -rf "$SCRATCH"' EXIT INT TERM
+
+echo "Node : $(hostname)"
+echo "Def  : $DEF"
+echo "Out  : $OUT"
+echo
+
+# Try fakeroot first (needed for %post on most setups); fall back to plain build.
+if ! apptainer build --fakeroot "$OUT" "$DEF"; then
+    echo "fakeroot build failed; retrying without it..." >&2
+    apptainer build "$OUT" "$DEF"
+fi
+
+echo
+echo "Built: $OUT"
+echo "Use it with:  SIF=$OUT sbatch docker/hpc/train_3ch.job"

@@ -1,0 +1,42 @@
+#!/bin/bash
+# Wrap the trained 3-channel checkpoint into the app's served format (embeds the
+# tuned anchors/NMS/thresholds so the desktop app loads it correctly). CPU-only.
+# Produces best_train_model.pt in the repo root; download that and drop it into
+# runs/tuning/train/ on each PC.
+#
+# Submit with:
+#   sbatch docker/hpc/package_3ch.job
+#   CKPT=runs/merged_3ch/checkpoints/best_mae.pt sbatch docker/hpc/package_3ch.job
+
+#SBATCH --job-name=pico_package
+#SBATCH --output=pico_package_%j.out
+#SBATCH --error=pico_package_%j.err
+#SBATCH --partition=scavenge
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --time=00:10:00
+
+set -euo pipefail
+
+REPO="${REPO:-$HOME/pico-algae}"
+SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
+CKPT="${CKPT:-runs/merged_3ch/checkpoints/best_mae.pt}"
+OUT="${OUT:-best_train_model.pt}"
+
+[ -e "$SIF" ]        || { echo "SIF not found: $SIF" >&2; exit 1; }
+[ -f "$REPO/$CKPT" ] || { echo "Checkpoint not found: $REPO/$CKPT" >&2; exit 1; }
+
+echo "Node : $(hostname)"
+echo "Repo : $REPO"
+echo "Ckpt : $CKPT"
+echo
+
+apptainer exec "$SIF" \
+    bash -c "cd '$REPO' && python scripts/package_for_app.py \
+        --ckpt '$CKPT' --train_yaml src/configs/train_frcnn.yaml --out '$OUT'"
+
+echo
+echo "App-ready model: $REPO/$OUT"
+echo "Download it (from your laptop):"
+echo "  scp -rp $USER@hpc.itu.dk:$REPO/$OUT ."
+echo "then place it at runs/tuning/train/best_train_model.pt on each PC."

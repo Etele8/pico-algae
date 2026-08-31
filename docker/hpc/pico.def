@@ -1,0 +1,16 @@
+# Apptainer definition for a self-contained Pico-Algae SIF.
+#
+# FALLBACK ONLY: prefer reusing ITU's pre-made PyTorch SIF + setup_env.job.
+# Use this if setup_env.job's imports don't resolve (e.g. the container ignores
+# ~/.local). It bootstraps from the on-cluster NGC PyTorch image (no Docker Hub,
+# no download) and bakes in the three extra packages.
+#
+# Build it in a job (see build_container.job), NOT on the login node.
+Bootstrap: localimage
+From: /opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif
+
+%post
+    python -m pip install --no-cache-dir opencv-python-headless pandas pyyaml
+
+%test
+    python -c "import torch, torchvision, cv2, pandas, yaml; print('pico SIF OK', torch.__version__)"
