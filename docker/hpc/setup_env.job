@@ -1,11 +1,15 @@
 #!/bin/bash
-# One-off: add the few Python packages our code needs on top of ITU's pre-made
+# One-off: add the one Python package our code needs on top of ITU's pre-made
 # PyTorch container, and verify everything imports. Run this ONCE before the
 # other jobs. Installs into your ~/.local (user site), which the container
 # picks up automatically on later runs.
 #
 # ITU already ships a PyTorch SIF (see `ls /opt/itu/containers/`), so there is
-# NO Docker Hub image to build or pull. We just add OpenCV/pandas/PyYAML.
+# NO Docker Hub image to build or pull. The container ALREADY has pandas + PyYAML;
+# only OpenCV is missing. IMPORTANT: the container's torch is compiled against
+# NumPy 1.x, so we pin an OpenCV build that stays on NumPy 1.x and use --no-deps
+# so pip cannot pull NumPy 2.x (which would shadow the container NumPy and break
+# `import torch` with "Failed to initialize NumPy: _ARRAY_API not found").
 #
 # Submit with:
 #   sbatch docker/hpc/setup_env.job
@@ -31,24 +35,40 @@ echo "Node : $(hostname)"
 echo "SIF  : $SIF"
 echo
 
-# torch/torchvision/numpy come from the container; we only add these three.
-# --user puts them in ~/.local so every later job sees them. (If pip complains
-# about an externally-managed environment, add --break-system-packages.)
+# torch/torchvision/numpy/pandas/pyyaml all come from the container; we add only
+# OpenCV. --user puts it in ~/.local so every later job sees it.
 apptainer exec "$SIF" bash -c '
     set -e
-    python -m pip install --user --no-cache-dir opencv-python-headless pandas pyyaml
+    PYV=$(python -c "import sys;print(f\"python{sys.version_info.major}.{sys.version_info.minor}\")")
+    SITE="$HOME/.local/lib/$PYV/site-packages"
+
+    # Scrub anything a previous run put in the user site that could shadow the
+    # container packages (a NumPy 2.x there is what breaks the pre-built torch).
+    rm -rf "$SITE"/numpy "$SITE"/numpy.libs "$SITE"/numpy-* \
+           "$SITE"/pandas "$SITE"/pandas-* \
+           "$SITE"/cv2 "$SITE"/opencv_python_headless* 2>/dev/null || true
+
+    # Only OpenCV, pinned to a NumPy-1.x-compatible build; --no-deps so it cannot
+    # pull NumPy 2.x. (Add --break-system-packages if pip refuses as externally
+    # managed.)
+    python -m pip install --user --no-cache-dir --no-deps "opencv-python-headless==4.10.0.84"
+
     echo
     echo "-- versions --"
-    python - <<PY
-import torch, torchvision, numpy, cv2, pandas, yaml
-print("torch      ", torch.__version__)
-print("torchvision", torchvision.__version__)
-print("numpy      ", numpy.__version__)
-print("cv2        ", cv2.__version__)
-print("pandas     ", pandas.__version__)
-print("pyyaml     ", yaml.__version__)
-print("OK - all imports resolve")
-PY
+    python -c "import torch,torchvision,numpy,cv2,pandas,yaml; \
+print(\"torch\",torch.__version__); print(\"torchvision\",torchvision.__version__); \
+print(\"numpy\",numpy.__version__); print(\"cv2\",cv2.__version__); \
+print(\"pandas\",pandas.__version__); print(\"pyyaml\",yaml.__version__); \
+print(\"OK - all imports resolve\")"
+
+    # Best-effort: warm the torchvision weights cache while this node has
+    # internet, so the GPU training node does not need to download them.
+    echo
+    echo "-- prefetching ResNet50 backbone weights (best effort) --"
+    python -c "from torchvision.models import resnet50,ResNet50_Weights; \
+resnet50(weights=ResNet50_Weights.DEFAULT); resnet50(weights=ResNet50_Weights.IMAGENET1K_V1); \
+print(\"weights cached under ~/.cache/torch\")" \
+        || echo "prefetch skipped (no internet here); the train job will fetch them"
 '
 
 echo
