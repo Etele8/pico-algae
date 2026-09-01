@@ -12,8 +12,11 @@ classes_to_count: [1, 2, 3]
 
 score_thresh_grid: [0.5]
 
-box_nms_thresh_grid: [0.5, 0.6]
+# NMS is post-hoc and secondary (matters for overlapping/double-counted boxes).
+box_nms_thresh_grid: [0.3, 0.4, 0.5, 0.6]
 
+# A non-binding cap: images hold ~50-150 cells, well under 300. Raising it does
+# nothing; lowering it only risks clipping real detections. Leave fixed.
 detections_per_image_grid: [300]
 
 per_class_score_thresh_grid:
