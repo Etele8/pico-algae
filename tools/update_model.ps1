@@ -31,7 +31,7 @@ try {
     $m = Get-Content $manifest -Raw | ConvertFrom-Json
     $version = "$($m.version)".Trim()
     $url     = "$($m.url)".Trim()
-    $sha     = "$($m.sha256)".Trim().ToLower()
+    $sha     = ("$($m.sha256)".Trim().ToLower() -replace '^sha256:', '')
     if (-not $version -or -not $url) { return }   # no model published yet
 
     # Already up to date?
