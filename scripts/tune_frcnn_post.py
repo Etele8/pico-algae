@@ -14,6 +14,12 @@ import torch
 import yaml
 from torch.utils.data import DataLoader
 
+# Avoid "Too many open files" (EMFILE) across many workers x CV folds.
+try:
+    torch.multiprocessing.set_sharing_strategy("file_system")
+except Exception:
+    pass
+
 from src.utils.seed import seed_everything
 from src.utils.io import ensure_dir
 from src.utils.logging import append_jsonl

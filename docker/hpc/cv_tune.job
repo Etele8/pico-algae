@@ -27,6 +27,9 @@
 
 set -euo pipefail
 
+# Raise the open-file limit to the hard max (avoids EMFILE from DataLoader shm fds).
+ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
+
 REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/pico-algae}}"
 SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
 DS="$REPO/data/processed/dataset_merged"
