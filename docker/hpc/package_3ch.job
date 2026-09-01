@@ -20,20 +20,27 @@ set -euo pipefail
 
 REPO="${REPO:-${SLURM_SUBMIT_DIR:-$HOME/pico-algae}}"
 SIF="${SIF:-/opt/itu/containers/pytorchtransformers/pytorch-24.07-py3-transformers.sif}"
-CKPT="${CKPT:-runs/merged_3ch/checkpoints/best_mae.pt}"
+CKPT="${CKPT:-runs/ship_3ch/checkpoints/best_mae.pt}"
+# Thresholds come from the HONEST held-out CV sweep, NOT a sweep of the all-data
+# ship model (that would be leakage). Point at the CV sweep's summary.
+POST_SUMMARY="${POST_SUMMARY:-runs/post_3ch/best_post_summary.json}"
 OUT="${OUT:-best_train_model.pt}"
 
 [ -e "$SIF" ]        || { echo "SIF not found: $SIF" >&2; exit 1; }
 [ -f "$REPO/$CKPT" ] || { echo "Checkpoint not found: $REPO/$CKPT" >&2; exit 1; }
 
+PS_ARG=""
+[ -f "$REPO/$POST_SUMMARY" ] && PS_ARG="--post_summary '$POST_SUMMARY'"
+
 echo "Node : $(hostname)"
 echo "Repo : $REPO"
 echo "Ckpt : $CKPT"
+echo "Post : ${POST_SUMMARY:-<none>}"
 echo
 
 apptainer exec "$SIF" \
     bash -c "cd '$REPO' && python scripts/package_for_app.py \
-        --ckpt '$CKPT' --train_yaml src/configs/train_frcnn.yaml --out '$OUT'"
+        --ckpt '$CKPT' --train_yaml src/configs/train_frcnn.yaml $PS_ARG --out '$OUT'"
 
 echo
 echo "App-ready model: $REPO/$OUT"
