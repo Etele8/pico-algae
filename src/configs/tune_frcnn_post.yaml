@@ -1,20 +1,26 @@
+# Post-hoc threshold sweep. Count EUK/FE/FC only ([1,2,3]) to match training,
+# the app, and the old benchmark -- do NOT count colony (4), or the total is
+# inflated by colony's many low-confidence boxes. The per-class grid runs high
+# enough (through 0.60) to actually reach the MAE minimum (the old optimum was
+# ~0.45). A single base score_thresh is kept because per-class thresholds
+# override it anyway (two base values just duplicate every row).
 seed: 42
 k_folds: 5
 num_workers: 8
 
-classes_to_count: [1, 2, 3, 4]
+classes_to_count: [1, 2, 3]
 
-score_thresh_grid: [0.05, 0.5]
+score_thresh_grid: [0.5]
 
-box_nms_thresh_grid: [0.60]
+box_nms_thresh_grid: [0.5, 0.6]
 
-detections_per_image_grid: [200, 300]
+detections_per_image_grid: [300]
 
 per_class_score_thresh_grid:
-  - {"1": 0.10, "2": 0.10, "3": 0.10, "4": 0.10}
-  - {"1": 0.15, "2": 0.15, "3": 0.15, "4": 0.15}
-  - {"1": 0.20, "2": 0.20, "3": 0.20, "4": 0.20}
-  - {"1": 0.25, "2": 0.25, "3": 0.25, "4": 0.25}
-  - {"1": 0.30, "2": 0.30, "3": 0.30, "4": 0.30}
-  - {"1": 0.35, "2": 0.35, "3": 0.35, "4": 0.35}
-  - {"1": 0.40, "2": 0.40, "3": 0.40, "4": 0.40}
+  - {"1": 0.30, "2": 0.30, "3": 0.30}
+  - {"1": 0.35, "2": 0.35, "3": 0.35}
+  - {"1": 0.40, "2": 0.40, "3": 0.40}
+  - {"1": 0.45, "2": 0.45, "3": 0.45}
+  - {"1": 0.50, "2": 0.50, "3": 0.50}
+  - {"1": 0.55, "2": 0.55, "3": 0.55}
+  - {"1": 0.60, "2": 0.60, "3": 0.60}
