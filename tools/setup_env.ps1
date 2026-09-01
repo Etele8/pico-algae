@@ -87,6 +87,15 @@ if (-not (Test-Path $venvPy)) {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the virtual environment." }
 }
 
+# Guarantee pip exists in the venv. A venv created by `uv venv` ships without pip,
+# so a reused .venv can be pip-less -- bootstrap it rather than failing later.
+& $venvPy -m pip --version 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Info "Bootstrapping pip in the virtual environment..."
+    & $venvPy -m ensurepip --upgrade
+    if ($LASTEXITCODE -ne 0) { throw "Could not bootstrap pip in the virtual environment." }
+}
+
 $channel = (& $py (Join-Path $AppDir 'tools\detect_cuda.py')).Trim()
 if (-not $channel) { $channel = 'cpu' }
 if ($channel -eq 'cpu') {
@@ -106,7 +115,7 @@ Info "Upgrading pip..."
 
 Info "Installing PyTorch ($channel) - this can take a few minutes the first time..."
 & $venvPy -m pip install torch==2.10.0 torchvision==0.25.0 --index-url "https://download.pytorch.org/whl/$channel"
-if ($LASTEXITCODE -ne 0) { throw "Installing PyTorch failed (check the internet connection)." }
+if ($LASTEXITCODE -ne 0) { throw "Installing PyTorch failed. Usually the internet connection; if you are online, the .venv may be broken -- delete the .venv folder and re-run." }
 
 Info "Installing the remaining components..."
 & $venvPy -m pip install -r (Join-Path $AppDir 'requirements.txt') --quiet
