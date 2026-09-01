@@ -138,6 +138,17 @@ def main():
     detections_per_image = int(cfg.get("detections_per_image", 300))
     box_nms_thresh = float(cfg.get("box_nms_thresh", 0.5))
 
+    # Saved into every checkpoint so downstream (post-sweep, packaging, the app)
+    # rebuilds the model with the SAME anchors it was trained with. Without this,
+    # tune_frcnn_post falls back to default anchors -> anchor mismatch -> garbage.
+    ckpt_params = {
+        "anchor_sizes": anchor_sizes_cfg,
+        "aspect_ratios": aspect_ratios_cfg,
+        "trainable_backbone_layers": trainable_backbone_layers,
+        "detections_per_image": detections_per_image,
+        "box_nms_thresh": box_nms_thresh,
+    }
+
     seed_everything(seed)
 
     out_dir = Path(args.out_dir)
@@ -247,16 +258,19 @@ def main():
         print(row)
         append_jsonl(log_path, row)
 
-        save_checkpoint(ckpt_dir / "last.pt", model, optimizer=optimizer, epoch=epoch)
+        save_checkpoint(ckpt_dir / "last.pt", model, optimizer=optimizer, epoch=epoch,
+                        extra={"params": ckpt_params})
 
         if va is not None and va["count_mae"] < best:
             best = va["count_mae"]
-            save_checkpoint(ckpt_dir / "best_mae.pt", model, epoch=epoch, extra={"best_mae": best})
+            save_checkpoint(ckpt_dir / "best_mae.pt", model, epoch=epoch,
+                            extra={"best_mae": best, "params": ckpt_params})
             print("  saved best_mae.pt (best_mae=", best, ")")
 
     if dl_va is None:
         # No validation holdout (train_all): the final epoch IS the shipped model.
-        save_checkpoint(ckpt_dir / "best_mae.pt", model, epoch=epochs, extra={"best_mae": None})
+        save_checkpoint(ckpt_dir / "best_mae.pt", model, epoch=epochs,
+                        extra={"best_mae": None, "params": ckpt_params})
         print(f"--train_all: saved final model to {ckpt_dir / 'best_mae.pt'}")
     print("Done. Best MAE:", best)
 

@@ -31,6 +31,9 @@ CH="${CH:-3}"
 CKPT="${CKPT:-runs/cv_${CH}ch/best_train_model.pt}"
 YAML="${YAML:-src/configs/tune_frcnn_post.yaml}"
 OUT="${OUT:-runs/post_${CH}ch}"
+# Anchor fallback for checkpoints that don't embed params (train_frcnn.py models).
+# Ignored when the checkpoint already carries params (cv_tune.py models).
+TRAIN_YAML="${TRAIN_YAML:-src/configs/train_frcnn.yaml}"
 
 [ -e "$SIF" ]          || { echo "SIF not found: $SIF"                       >&2; exit 1; }
 [ -f "$DS/index.csv" ] || { echo "index.csv missing (run prepare_index.job)" >&2; exit 1; }
@@ -49,6 +52,7 @@ apptainer exec --nv "$SIF" \
         --checkpoint '$CKPT' \
         --out_dir '$OUT' \
         --channels $CH \
+        --train_yaml '$TRAIN_YAML' \
         --device cuda $*"
 
 echo

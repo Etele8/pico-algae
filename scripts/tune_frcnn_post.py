@@ -61,6 +61,10 @@ def main():
     ap.add_argument("--device", default="", type=str)
     ap.add_argument("--channels", type=int, choices=(3, 6), default=6,
                     help="Must match the checkpoint: 3 = og-only, 6 = og+red fusion.")
+    ap.add_argument("--train_yaml", default="", type=str,
+                    help="Fallback source for anchors/aspect/trainable-layers when the "
+                         "checkpoint has no 'params' (e.g. a train_frcnn.py checkpoint). "
+                         "MUST match the anchors the model was trained with.")
     args = ap.parse_args()
 
     if args.channels == 6:
@@ -114,8 +118,22 @@ def main():
 
     # Load checkpoint (trained weights + base params)
     ckpt = torch.load(Path(args.checkpoint), map_location="cpu")
-    base_params: Dict[str, Any] = ckpt.get("params", {})
-    print("Loaded checkpoint params:\n", json.dumps(base_params, indent=2))
+    base_params: Dict[str, Any] = ckpt.get("params", {}) or {}
+    if not base_params.get("anchor_sizes") and args.train_yaml:
+        tcfg = yaml.safe_load(Path(args.train_yaml).read_text(encoding="utf-8")) or {}
+        base_params = {
+            "anchor_sizes": tcfg.get("anchor_sizes", tcfg.get("space", {}).get("anchor_sizes")),
+            "aspect_ratios": tcfg.get("aspect_ratios", tcfg.get("space", {}).get("aspect_ratios")),
+            "trainable_backbone_layers": int(tcfg.get("trainable_backbone_layers", 3)),
+        }
+        print(f"[fallback] checkpoint had no params; anchors loaded from {args.train_yaml}")
+    if not base_params.get("anchor_sizes"):
+        raise SystemExit(
+            "Checkpoint has no 'params' (anchors). Pass --train_yaml pointing to the "
+            "config the model was TRAINED with, or the model would be rebuilt with the "
+            "wrong default anchors (garbage detections)."
+        )
+    print("Using params:\n", json.dumps(base_params, indent=2))
 
     # Prepare anchor/aspect from params (if present)
     anchor_sizes = base_params.get("anchor_sizes", None)
