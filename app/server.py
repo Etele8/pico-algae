@@ -37,6 +37,12 @@ PAYLOAD_FLOOR = 0.05
 OUTPUT_DIR = Path.home() / "Pico-Algae Captures"
 CONFIG_FILE = Path.home() / ".pico_capture.json"
 
+# Counts CSVs are opened by double-clicking them in Excel, which splits columns
+# on the Windows list separator -- ';' on a Hungarian PC, where ',' is the
+# decimal mark -- and reads a file without a BOM as ANSI, garbling accents.
+CSV_DELIMITER = ";"
+CSV_ENCODING = "utf-8-sig"
+
 
 def cfg_load() -> dict:
     try:
@@ -548,7 +554,7 @@ def save_csv():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     name = _sanitize_name(data.get("filename") or "pico_counts") + ".csv"
     path = _unique_path(OUTPUT_DIR / name)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding=CSV_ENCODING)
     return jsonify(ok=True, folder=str(OUTPUT_DIR), file=path.name)
 
 
@@ -667,12 +673,27 @@ def _unique_path(path: Path) -> Path:
         i += 1
 
 
+def _convert_comma_csv(path: Path) -> None:
+    """Rewrite a counts.csv from before CSV_DELIMITER, so appended rows match it."""
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        header = f.readline()
+        if CSV_DELIMITER in header or "," not in header:
+            return
+        f.seek(0)
+        rows = list(csv.reader(f))
+    with open(path, "w", newline="", encoding=CSV_ENCODING) as f:
+        csv.writer(f, delimiter=CSV_DELIMITER).writerows(rows)
+
+
 def _append_counts_csv(path: Path, ts: str, name: str, data: dict) -> None:
     names = [CLASS_NAMES[c] for c in get_counter().classes_to_count if c in CLASS_NAMES]
     counts = data.get("counts", {}) or {}
     is_new = not path.exists()
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
+    if not is_new:
+        _convert_comma_csv(path)
+    # Appending to a utf-8-sig file adds no second BOM: Python writes it only at offset 0.
+    with open(path, "a", newline="", encoding=CSV_ENCODING) as f:
+        w = csv.writer(f, delimiter=CSV_DELIMITER)
         if is_new:
             w.writerow(["timestamp", "name"] + names + ["total", "colony_cells", "unassigned"])
         w.writerow(
@@ -987,7 +1008,7 @@ RESULTS_JS = r"""
   }
 
   // ---------- CSV (reflects live corrections) ----------
-  function csvCell(v){ v=String(v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+  function csvCell(v){ v=String(v); return /[";\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
   function buildCsvText(){
     const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colony_cells','total'])];
     const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0;
@@ -997,7 +1018,7 @@ RESULTS_JS = r"""
       COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells;
     });
     rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[colTot, grand]));
-    return rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
+    return rows.map(r=>r.map(csvCell).join(';')).join('\r\n');
   }
   function saveCsv(){
     if(!PICO.images.length) return;
