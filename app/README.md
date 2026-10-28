@@ -32,7 +32,7 @@ Notes:
   Alga share. Colonies flagged but not yet given a count are listed as `unassigned`,
   since their cells are in no class column.
 - **Pipeline folder**: set it once per PC to that share folder (e.g.
-  `Z:\Algaaw-incoming\pico-algae`) and every **Save counts CSV** also sends the file
+  `Z:\Alga\raw-incoming\pico-algae`) and every **Save counts CSV** also sends the file
   there, so nothing has to be copied by hand. The local copy is always kept; if the
   share is not connected, the save says the file was *not* sent. Leave it empty to turn
   it off.
