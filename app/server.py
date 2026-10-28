@@ -107,6 +107,18 @@ def installed_commit() -> str | None:
         return None
 
 
+# Stamped next to the checkpoint by tools/update_model.ps1. Written into the
+# counts CSV, so counts from different models can be told apart later.
+_MODEL_VERSION_FILE = DEFAULT_CKPT.with_name("MODEL_VERSION.txt")
+
+
+def installed_model_version() -> str:
+    try:
+        return _MODEL_VERSION_FILE.read_text(encoding="utf-8", errors="ignore").strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 PAGE_HEAD = """
 <!doctype html>
 <html lang="en">
@@ -718,6 +730,7 @@ def render_results(images, skipped, thr, counter, mode="upload") -> str:
         "classNames": {str(k): v for k, v in CLASS_NAMES.items()},
         "classColors": {str(k): f"rgb({r},{g},{b})" for k, (r, g, b) in CLASS_COLORS.items()},
         "thr": thr,
+        "modelVersion": installed_model_version(),
         "floor": PAYLOAD_FLOOR,
         "mode": mode,
         "outputDir": str(OUTPUT_DIR),
@@ -850,6 +863,7 @@ RESULTS_JS = r"""
   const COUNTED = M.countedClasses.map(Number);
   const ALL = Object.keys(NAMES).map(Number).sort();
   const CAPTURE = M.mode === 'capture';   // screen-capture session: save to disk + poll for new
+  const SAMPLE = {station:'', date:''};   // kept here: the page re-renders on every correction
   let uid = 1;
 
   function normImg(img){
@@ -949,6 +963,11 @@ RESULTS_JS = r"""
           ${n ? '<button class="mbtn on" id="csvBtn">⬇ Save counts CSV</button>' : ''}
         </span>
       </div>
+      ${n ? `<div class="folderbar">
+        <span class="help">🧪 Sample (needed for the counts CSV):</span>
+        <input class="nameinput" id="station" placeholder="station, e.g. Keszthely" value="${esc(SAMPLE.station)}">
+        <input class="nameinput" id="sampled" type="date" title="the day the water sample was taken" value="${esc(SAMPLE.date)}">
+      </div>` : ''}
       <p class="note">${intro}</p>
       <div class="legend" style="margin:6px 0 10px">${legend}</div>
       <div class="folderbar">
@@ -986,6 +1005,9 @@ RESULTS_JS = r"""
 
     const csvBtn = document.getElementById('csvBtn');
     if(csvBtn) csvBtn.onclick = saveCsv;
+    const station=document.getElementById('station'), sampled=document.getElementById('sampled');
+    if(station) station.oninput = ()=>{ SAMPLE.station = station.value; };
+    if(sampled) sampled.oninput = ()=>{ SAMPLE.date = sampled.value; };
     const expBtn = document.getElementById('expBtn');
     if(expBtn) expBtn.onclick = exportTraining;
     const outdir=document.getElementById('outdir'), setdir=document.getElementById('setdir'),
@@ -1009,22 +1031,34 @@ RESULTS_JS = r"""
 
   // ---------- CSV (reflects live corrections) ----------
   function csvCell(v){ v=String(v); return /[";\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+  // Station and sampling date go on every row: the data pipeline reads them
+  // from the file, and a row copied out on its own still says where it is from.
+  // 'unassigned' is colonies flagged but not yet given a count -- their cells
+  // are in no column, so the reader has to be told they are missing.
   function buildCsvText(){
-    const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colony_cells','total'])];
-    const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0;
+    const rows=[['image','station','sampling_date'].concat(COUNTED.map(c=>NAMES[c]),
+      ['colony_cells','unassigned','total','model'])];
+    const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0, unTot=0;
+    const sample=[SAMPLE.station.trim(), SAMPLE.date];
     PICO.images.forEach(img=>{
       const r=counts(img), t=total(img);
-      rows.push([img.name].concat(COUNTED.map(k=>r.cls[k]||0),[r.colonyCells, t]));
-      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells;
+      rows.push([img.name].concat(sample, COUNTED.map(k=>r.cls[k]||0),
+        [r.colonyCells, r.needReview, t, M.modelVersion]));
+      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells; unTot+=r.needReview;
     });
-    rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[colTot, grand]));
+    rows.push(['All images'].concat(sample, COUNTED.map(k=>tot[k]),[colTot, unTot, grand, M.modelVersion]));
     return rows.map(r=>r.map(csvCell).join(';')).join('\r\n');
   }
   function saveCsv(){
     if(!PICO.images.length) return;
+    if(!SAMPLE.station.trim() || !SAMPLE.date){
+      toast('Fill in the station and the sampling date first', false);
+      document.getElementById(SAMPLE.station.trim() ? 'sampled' : 'station')?.focus();
+      return;
+    }
     const btn=document.getElementById('csvBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
     fetch('/save_csv',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({csv:buildCsvText(), filename:'pico_counts'})})
+      body:JSON.stringify({csv:buildCsvText(), filename:SAMPLE.station.trim()+'_'+SAMPLE.date})})
       .then(r=>r.json()).then(res=>{
         if(btn){ btn.disabled=false; btn.textContent='⬇ Save counts CSV'; }
         if(res.ok) toast('✔ Saved '+res.file+' → '+res.folder, true);

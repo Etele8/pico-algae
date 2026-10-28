@@ -26,6 +26,11 @@ Notes:
 - **Save folder**: the box at the top of the results sets where server-side outputs go
   (**Save counts CSV**, the training export, and captures). Type a path or click **📂 Browse…**
   to pick one from the local file tree; it's remembered between runs.
+- **Station and sampling date** must be filled in before **Save counts CSV**: they go
+  on every row, and the file is named after them (`Keszthely_2026-06-08.csv`). The
+  institute's data pipeline reads the counts from there -- copy the CSV into
+  `raw-incoming/pico-algae/` on the Alga share. Colonies flagged but not yet given a
+  count are listed as `unassigned`, since their cells are in no class column.
 
 ### In the editor (click any image)
 
