@@ -65,6 +65,12 @@ _saved_dir = cfg_load().get("output_dir")
 if _saved_dir:
     OUTPUT_DIR = Path(_saved_dir)
 
+# The share folder the institute's data pipeline reads counts from, e.g.
+# Z:\Alga\raw-incoming\pico-algae. Every saved counts CSV is also written there.
+# None is off: the CSV stays in OUTPUT_DIR only.
+_saved_pipeline = cfg_load().get("pipeline_dir")
+PIPELINE_DIR = Path(_saved_pipeline) if _saved_pipeline else None
+
 # Ordered in-memory list of screen captures for the current session.
 _captures: list = []
 _captures_lock = Lock()
@@ -105,6 +111,18 @@ def installed_commit() -> str | None:
         return _VERSION_FILE.read_text(encoding="utf-8", errors="ignore").split()[0][:7]
     except Exception:
         return None
+
+
+# Stamped next to the checkpoint by tools/update_model.ps1. Written into the
+# counts CSV, so counts from different models can be told apart later.
+_MODEL_VERSION_FILE = DEFAULT_CKPT.with_name("MODEL_VERSION.txt")
+
+
+def installed_model_version() -> str:
+    try:
+        return _MODEL_VERSION_FILE.read_text(encoding="utf-8", errors="ignore").strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 PAGE_HEAD = """
@@ -555,7 +573,57 @@ def save_csv():
     name = _sanitize_name(data.get("filename") or "pico_counts") + ".csv"
     path = _unique_path(OUTPUT_DIR / name)
     path.write_text(text, encoding=CSV_ENCODING)
-    return jsonify(ok=True, folder=str(OUTPUT_DIR), file=path.name)
+    result = {"ok": True, "folder": str(OUTPUT_DIR), "file": path.name}
+    if PIPELINE_DIR is not None:
+        # The local copy is saved either way; a share that is not connected
+        # is reported, so nobody believes the counts were sent when they were not.
+        try:
+            result["pipeline_file"] = _send_to_pipeline(text, path.name)
+        except OSError as e:
+            result["pipeline_error"] = str(e)
+    return jsonify(**result)
+
+
+def _send_to_pipeline(text: str, name: str) -> str:
+    """Write the counts CSV into the pipeline's incoming folder on the share.
+
+    Written under a '.partial' name, which the pipeline ignores, and renamed
+    once complete, so it can never read half a file. A file of the same name
+    still waiting there is the same sample saved again, and is replaced.
+    """
+    if not PIPELINE_DIR.is_dir():
+        raise OSError(f"{PIPELINE_DIR} cannot be reached -- is the share connected?")
+    final = PIPELINE_DIR / name
+    partial = final.with_name(name + ".partial")
+    partial.write_text(text, encoding=CSV_ENCODING)
+    os.replace(partial, final)
+    return str(final)
+
+
+#: The pipeline routes by folder name; any other folder would hand the counts
+#: to a parser for a different instrument.
+_PIPELINE_FOLDER_NAMES = {"pico-algae", "pico_algae", "pico algae"}
+
+
+@app.post("/set_pipeline_dir")
+def set_pipeline_dir():
+    """Set (and remember) the share folder counts CSVs are also sent to. Empty turns it off."""
+    global PIPELINE_DIR
+    data = request.get_json(force=True, silent=True) or {}
+    raw = (data.get("path") or "").strip().strip('"')
+    if not raw:
+        PIPELINE_DIR = None
+        cfg_set("pipeline_dir", "")
+        return jsonify(ok=True, folder="")
+    path = Path(raw).expanduser()
+    if path.name.lower() not in _PIPELINE_FOLDER_NAMES:
+        return jsonify(ok=False, error="choose the raw-incoming\\pico-algae folder on the share"), 400
+    # Not created when missing: a typo would make a folder the pipeline never reads.
+    if not path.is_dir():
+        return jsonify(ok=False, error=f"{path} does not exist or cannot be reached"), 400
+    PIPELINE_DIR = path
+    cfg_set("pipeline_dir", str(path))
+    return jsonify(ok=True, folder=str(path))
 
 
 @app.post("/save/<rid>")
@@ -718,9 +786,11 @@ def render_results(images, skipped, thr, counter, mode="upload") -> str:
         "classNames": {str(k): v for k, v in CLASS_NAMES.items()},
         "classColors": {str(k): f"rgb({r},{g},{b})" for k, (r, g, b) in CLASS_COLORS.items()},
         "thr": thr,
+        "modelVersion": installed_model_version(),
         "floor": PAYLOAD_FLOOR,
         "mode": mode,
         "outputDir": str(OUTPUT_DIR),
+        "pipelineDir": str(PIPELINE_DIR) if PIPELINE_DIR else "",
     }
     if mode == "capture":
         meta["pollUrl"] = "/captures/since/"
@@ -850,6 +920,7 @@ RESULTS_JS = r"""
   const COUNTED = M.countedClasses.map(Number);
   const ALL = Object.keys(NAMES).map(Number).sort();
   const CAPTURE = M.mode === 'capture';   // screen-capture session: save to disk + poll for new
+  const SAMPLE = {station:'', date:''};   // kept here: the page re-renders on every correction
   let uid = 1;
 
   function normImg(img){
@@ -949,6 +1020,11 @@ RESULTS_JS = r"""
           ${n ? '<button class="mbtn on" id="csvBtn">⬇ Save counts CSV</button>' : ''}
         </span>
       </div>
+      ${n ? `<div class="folderbar">
+        <span class="help">🧪 Sample (needed for the counts CSV):</span>
+        <input class="nameinput" id="station" placeholder="station, e.g. Keszthely" value="${esc(SAMPLE.station)}">
+        <input class="nameinput" id="sampled" type="date" title="the day the water sample was taken" value="${esc(SAMPLE.date)}">
+      </div>` : ''}
       <p class="note">${intro}</p>
       <div class="legend" style="margin:6px 0 10px">${legend}</div>
       <div class="folderbar">
@@ -956,6 +1032,11 @@ RESULTS_JS = r"""
         <input class="nameinput" id="outdir" style="flex:1;min-width:240px;max-width:none" value="${esc(M.outputDir||'')}">
         <button class="mbtn" id="browsedir">📂 Browse…</button>
         <button class="mbtn" id="setdir">Set</button>
+      </div>
+      <div class="folderbar">
+        <span class="help">📤 Pipeline folder (counts CSVs are also sent here, for the institute database; empty = off):</span>
+        <input class="nameinput" id="pipedir" style="flex:1;min-width:240px;max-width:none" placeholder="e.g. Z:\\Alga\\raw-incoming\\pico-algae" value="${esc(M.pipelineDir||'')}">
+        <button class="mbtn" id="setpipe">Set</button>
       </div>
       ${warn}
       ${tableHtml}
@@ -986,6 +1067,12 @@ RESULTS_JS = r"""
 
     const csvBtn = document.getElementById('csvBtn');
     if(csvBtn) csvBtn.onclick = saveCsv;
+    const station=document.getElementById('station'), sampled=document.getElementById('sampled');
+    if(station) station.oninput = ()=>{ SAMPLE.station = station.value; };
+    if(sampled) sampled.oninput = ()=>{ SAMPLE.date = sampled.value; };
+    const pipedir=document.getElementById('pipedir'), setpipe=document.getElementById('setpipe');
+    if(setpipe) setpipe.onclick=()=>applyPipelineDir(pipedir.value);
+    if(pipedir) pipedir.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); applyPipelineDir(pipedir.value); } });
     const expBtn = document.getElementById('expBtn');
     if(expBtn) expBtn.onclick = exportTraining;
     const outdir=document.getElementById('outdir'), setdir=document.getElementById('setdir'),
@@ -1009,25 +1096,39 @@ RESULTS_JS = r"""
 
   // ---------- CSV (reflects live corrections) ----------
   function csvCell(v){ v=String(v); return /[";\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+  // Station and sampling date go on every row: the data pipeline reads them
+  // from the file, and a row copied out on its own still says where it is from.
+  // 'unassigned' is colonies flagged but not yet given a count -- their cells
+  // are in no column, so the reader has to be told they are missing.
   function buildCsvText(){
-    const rows=[['image'].concat(COUNTED.map(c=>NAMES[c]),['colony_cells','total'])];
-    const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0;
+    const rows=[['image','station','sampling_date'].concat(COUNTED.map(c=>NAMES[c]),
+      ['colony_cells','unassigned','total','model'])];
+    const tot={}; COUNTED.forEach(k=>tot[k]=0); let grand=0, colTot=0, unTot=0;
+    const sample=[SAMPLE.station.trim(), SAMPLE.date];
     PICO.images.forEach(img=>{
       const r=counts(img), t=total(img);
-      rows.push([img.name].concat(COUNTED.map(k=>r.cls[k]||0),[r.colonyCells, t]));
-      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells;
+      rows.push([img.name].concat(sample, COUNTED.map(k=>r.cls[k]||0),
+        [r.colonyCells, r.needReview, t, M.modelVersion]));
+      COUNTED.forEach(k=>tot[k]+=(r.cls[k]||0)); grand+=t; colTot+=r.colonyCells; unTot+=r.needReview;
     });
-    rows.push(['All images'].concat(COUNTED.map(k=>tot[k]),[colTot, grand]));
+    rows.push(['All images'].concat(sample, COUNTED.map(k=>tot[k]),[colTot, unTot, grand, M.modelVersion]));
     return rows.map(r=>r.map(csvCell).join(';')).join('\r\n');
   }
   function saveCsv(){
     if(!PICO.images.length) return;
+    if(!SAMPLE.station.trim() || !SAMPLE.date){
+      toast('Fill in the station and the sampling date first', false);
+      document.getElementById(SAMPLE.station.trim() ? 'sampled' : 'station')?.focus();
+      return;
+    }
     const btn=document.getElementById('csvBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving…'; }
     fetch('/save_csv',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({csv:buildCsvText(), filename:'pico_counts'})})
+      body:JSON.stringify({csv:buildCsvText(), filename:SAMPLE.station.trim()+'_'+SAMPLE.date})})
       .then(r=>r.json()).then(res=>{
         if(btn){ btn.disabled=false; btn.textContent='⬇ Save counts CSV'; }
-        if(res.ok) toast('✔ Saved '+res.file+' → '+res.folder, true);
+        if(res.ok && res.pipeline_error) toast('Saved '+res.file+' here, but NOT sent to the pipeline: '+res.pipeline_error, false);
+        else if(res.ok && res.pipeline_file) toast('✔ Saved '+res.file+' and sent it to the pipeline', true);
+        else if(res.ok) toast('✔ Saved '+res.file+' → '+res.folder, true);
         else toast('Could not save CSV: '+(res.error||'?'), false);
       }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='⬇ Save counts CSV'; } toast('Could not save CSV: '+e, false); });
   }
@@ -1046,6 +1147,14 @@ RESULTS_JS = r"""
           toast('✔ Saving to '+res.folder, true); }
         else toast('Could not set folder: '+(res.error||'?'), false);
       }).catch(e=>toast('Could not set folder: '+e, false));
+  }
+  function applyPipelineDir(p){
+    fetch('/set_pipeline_dir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:(p||'').trim()})})
+      .then(r=>r.json()).then(res=>{
+        if(res.ok){ M.pipelineDir=res.folder;
+          toast(res.folder ? '✔ Counts CSVs will also go to '+res.folder : 'Counts CSVs are no longer sent to the pipeline', true); }
+        else toast('Could not set the pipeline folder: '+(res.error||'?'), false);
+      }).catch(e=>toast('Could not set the pipeline folder: '+e, false));
   }
   let BR=null, brCur='';
   function ensureBrowse(){
