@@ -28,9 +28,14 @@ Notes:
   to pick one from the local file tree; it's remembered between runs.
 - **Station and sampling date** must be filled in before **Save counts CSV**: they go
   on every row, and the file is named after them (`Keszthely_2026-06-08.csv`). The
-  institute's data pipeline reads the counts from there -- copy the CSV into
-  `raw-incoming/pico-algae/` on the Alga share. Colonies flagged but not yet given a
-  count are listed as `unassigned`, since their cells are in no class column.
+  institute's data pipeline reads the counts from `raw-incoming/pico-algae/` on the
+  Alga share. Colonies flagged but not yet given a count are listed as `unassigned`,
+  since their cells are in no class column.
+- **Pipeline folder**: set it once per PC to that share folder (e.g.
+  `Z:\Algaaw-incoming\pico-algae`) and every **Save counts CSV** also sends the file
+  there, so nothing has to be copied by hand. The local copy is always kept; if the
+  share is not connected, the save says the file was *not* sent. Leave it empty to turn
+  it off.
 
 ### In the editor (click any image)
 
